@@ -1,0 +1,14 @@
+{
+  "name": "video-map",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Play hundreds of videos at once on flat, cylindrical or spherical surfaces using a video tile pyramid.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "spike:generate": "node spike/generate.mjs",
+    "spike:serve": "node spike/serve.mjs"
+  }
+}

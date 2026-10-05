@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.vmap-cache/
+spike/media/
+spike/results/
+.DS_Store

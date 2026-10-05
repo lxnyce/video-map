@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>VideoMap Device Test</title>
+  <link rel="stylesheet" href="spike.css">
+</head>
+<body>
+  <canvas id="stage" aria-label="Tile videos rendered with WebGL"></canvas>
+  <div id="video-host" aria-hidden="true"></div>
+
+  <header id="hud" aria-live="off">
+    <div><span class="k">Render</span> <span id="hud-fps">–</span></div>
+    <div><span class="k">Videos</span> <span id="hud-videos">–</span></div>
+    <div><span class="k">Video fps</span> <span id="hud-vfps">–</span></div>
+    <div><span class="k">Drift</span> <span id="hud-drift">–</span></div>
+    <div><span class="k">Dropped/s</span> <span id="hud-dropped">–</span></div>
+    <div><span class="k">Stalls</span> <span id="hud-stalls">–</span></div>
+  </header>
+
+  <section id="panel" class="open">
+    <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-body">Controls</button>
+    <div id="panel-body">
+      <h1>VideoMap device test <small>milestone 0</small></h1>
+      <p id="status" class="status">Loading…</p>
+
+      <div class="grid">
+        <label>Tile set
+          <select id="set"></select>
+        </label>
+        <label>Concurrent videos <output id="count-out">4</output>
+          <input id="count" type="range" min="0" max="16" value="4">
+        </label>
+        <label>Texture upload
+          <select id="upload">
+            <option value="rvfc">On new frame (requestVideoFrameCallback)</option>
+            <option value="raf">Every render frame (naive)</option>
+          </select>
+        </label>
+        <label>Max uploads per frame
+          <select id="budget">
+            <option value="0">Unlimited</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+        <label class="check"><input id="sync" type="checkbox" checked> Sync correction (master clock)</label>
+      </div>
+
+      <div class="actions">
+        <button id="start" type="button" class="primary">Start</button>
+        <button id="ramp" type="button">Run ramp test</button>
+        <button id="stop" type="button">Stop</button>
+      </div>
+
+      <div id="results" hidden>
+        <h2>Ramp results <span id="verdict"></span></h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Videos</th><th>Render fps</th><th>Frame p95</th><th>Video fps min / avg</th><th>Max drift</th><th>Dropped/s</th><th>Stalls</th><th>First frame</th><th>Pass</th></tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+        <div class="actions">
+          <button id="download" type="button">Download JSON</button>
+          <button id="copy" type="button">Copy JSON</button>
+        </div>
+        <textarea id="results-json" readonly rows="6" aria-label="Results JSON"></textarea>
+      </div>
+
+      <details id="device">
+        <summary>Device info</summary>
+        <pre id="device-info"></pre>
+      </details>
+    </div>
+  </section>
+
+  <script type="module" src="spike.js"></script>
+</body>
+</html>
