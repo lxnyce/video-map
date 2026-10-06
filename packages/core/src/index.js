@@ -20,6 +20,8 @@ export {
 export { CYLINDER_HEIGHT, mercator, inverseMercator, surfaceAspect, surfaceGeometry, surfacePoint, surfaceScale, wallPoint, surfaceHit, wrapDelta } from './surface.js';
 export { SCENE_FORMAT, SCENE_VERSION, PATHS, fillTemplate, createRuntimeManifest } from './manifest.js';
 export { sceneSchema } from './schema.js';
+export { estimateSizes, isWebCompatible } from './estimate.js';
+export { VIDEO_EXTENSIONS, humanize, extname, basename } from './names.js';
 
 /** @typedef {import('./dims.js').Size} Size */
 /** @typedef {import('./config.js').ResolvedConfig} ResolvedConfig */

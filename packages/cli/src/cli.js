@@ -33,6 +33,7 @@ Usage
   vmap info [dist]              Summarize an output folder
   vmap doctor                   Check ffmpeg, its features and hardware encoders
   vmap clean [scene.json]       Delete the build cache
+  vmap studio                   Open the Studio: upload, edit and build in the browser
 
 Run "vmap <command> --help" for options.`;
 
@@ -106,6 +107,20 @@ H.264 encoder (the result is cached for builds).`,
 
 Deletes the build cache (.vmap-cache next to the scene, or --cache). The next
 build re-encodes clips and tiles from the sources.`,
+  studio: `vmap studio [options]
+
+Starts VideoMap Studio, a local web app for making walls: upload videos, edit
+their details and the layout, build, preview and download the result.
+
+  -d, --data <dir>         Folder for projects and settings
+                           (default: "VideoMap Studio" in your home folder, or $VMAP_STUDIO_DATA)
+  -p, --port <n>           Port (default 5170; 0 picks a free one)
+      --host <addr>        Interface to listen on (default 127.0.0.1: this computer only;
+                           0.0.0.0 also serves your network, without a login)
+      --allow-host <name>  Also accept this host name (e.g. behind a reverse proxy); repeatable
+      --open               Open the browser
+      --ffmpeg <path>      ffmpeg binary
+      --ffprobe <path>     ffprobe binary`,
 };
 
 // ---------------------------------------------------------------------------
@@ -131,7 +146,7 @@ async function main(argv) {
     console.log(pkg.version);
     return EXIT.ok;
   }
-  const run = { init, validate, build, preview, info, doctor, clean }[command];
+  const run = { init, validate, build, preview, info, doctor, clean, studio }[command];
   if (!run) throw new UsageError(`Unknown command "${command}". Run "vmap --help".`);
   if (rest.includes('-h') || rest.includes('--help')) {
     console.log(COMMAND_HELP[command]);
@@ -553,6 +568,41 @@ async function clean(args) {
   if (freed === null) console.log(`No build cache at ${rel(dir)}.`);
   else console.log(`${green('✔')} Deleted ${rel(dir)} (${mb(freed)}).`);
   return EXIT.ok;
+}
+
+// ---------------------------------------------------------------------------
+// studio
+
+async function studio(args) {
+  const { values } = parse(args, {
+    data: { type: 'string', short: 'd' },
+    port: { type: 'string', short: 'p' },
+    host: { type: 'string' },
+    'allow-host': { type: 'string', multiple: true },
+    open: { type: 'boolean' },
+    ffmpeg: { type: 'string' },
+    ffprobe: { type: 'string' },
+  });
+  // Loaded on demand: the other commands don't need the Studio.
+  const { startStudio, defaultDataDir } = await import('@videomap/studio');
+  const host = values.host ?? '127.0.0.1';
+  const s = await startStudio({
+    dataDir: values.data ? path.resolve(values.data) : defaultDataDir(),
+    port: num(values.port, '--port', { min: 0, max: 65535, int: true }) ?? 5170,
+    host,
+    allowHosts: values['allow-host'] ?? [],
+    ffmpeg: values.ffmpeg,
+    ffprobe: values.ffprobe,
+  });
+  console.log(`${bold('VideoMap Studio')} is running:`);
+  s.urls.forEach((u, i) => console.log(`  ${u}${i > 0 ? dim('   (other devices on your network)') : ''}`));
+  console.log(dim(`Projects are in ${s.dataDir}`));
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+    console.log(yellow('! The Studio has no login: anyone who can reach this address can upload, edit and delete projects.'));
+  }
+  console.log(dim('Press Ctrl+C to stop.'));
+  if (values.open) openBrowser(s.url);
+  return new Promise(() => {}); // run until interrupted
 }
 
 // ---------------------------------------------------------------------------

@@ -5,4 +5,5 @@ spike/media/
 spike/results/
 .DS_Store
 packages/viewer/dist/
+packages/studio/dist/
 wall/

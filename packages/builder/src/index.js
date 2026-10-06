@@ -5,6 +5,7 @@ export { HW_ORDER, chooseEncoder, createEncoderRunner, detectHardware, hardwareC
 export { probe, parseProbe } from './probe.js';
 export { createProgress, createLimiter, formatDuration } from './progress.js';
 export { BuildCache, cleanCache, dirSize } from './cache.js';
+export { CONTENT_TYPES, serveFile, serveStatic } from './serve.js';
 export * as encode from './encode.js';
 
 /** @typedef {import('./build.js').BuildOptions} BuildOptions */

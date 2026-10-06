@@ -3,9 +3,9 @@
 
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { VIDEO_EXTENSIONS, humanize } from '@videomap/core';
 import { slugify } from '@videomap/core/validate';
 
-export const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.mpg', '.mpeg', '.ts', '.mts', '.wmv', '.flv', '.ogv', '.3gp']);
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.vmap-cache']);
 
 /**
@@ -63,10 +63,4 @@ async function findVideos(dir) {
     }
   }
   return out;
-}
-
-/** "coral_reef-01" → "Coral reef 01" */
-function humanize(s) {
-  const t = s.replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return t ? t[0].toUpperCase() + t.slice(1) : s;
 }

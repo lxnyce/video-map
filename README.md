@@ -9,7 +9,8 @@ Play hundreds of videos at the same time on a flat, cylindrical or spherical sur
 - Milestone 3 (layout and build revisions) is built: whole frames by default, masonry packing, hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox, VA-API) with a libx264 fallback, and tiles-only builds.
 - Milestone 4 (curved surfaces) is built: walls wrapped inside or around a cylinder or a sphere, with controls, picking and player windows that follow the curve.
 - Milestone 5 (discovery) is built: search, category and tag filters that dim the rest of the wall, a list view, clickable group labels, a minimap, and pre-baked alternate layouts the viewer can switch between.
-- Next is milestone 6: the Studio (uploads, metadata editing and builds in the browser).
+- Milestone 6 (Studio) is built: a local web app to upload videos, edit their details and the layout with a live preview of the wall, build with live progress, preview the result and download it as a zip.
+- Next is milestone 7: sample scenes, theming, an accessibility pass and release packaging.
 
 ## Quick start
 
@@ -26,11 +27,18 @@ npx vmap preview wall/dist                       # open http://localhost:8080
 
 Upload `wall/dist/` to any static host, in any folder.
 
+Or do all of that in the browser:
+
+```sh
+npx vmap studio --open                           # VideoMap Studio on http://localhost:5170
+```
+
 ## Docs
 
 - [docs/PLAN.md](docs/PLAN.md) is the implementation plan.
 - [docs/cli.md](docs/cli.md) covers the `vmap` commands, options and build pipeline.
 - [docs/viewer.md](docs/viewer.md) covers the viewer's controls, deep links, URL parameters, embedding and theming.
+- [docs/studio.md](docs/studio.md) covers the Studio: projects, the library, layout preview, JSON editing, builds and its API.
 - [docs/scene-format.md](docs/scene-format.md) is the `scene.json` reference. [docs/examples/scene.example.json](docs/examples/scene.example.json) is a full example.
 - [spike/](spike/README.md) holds the milestone 0 device test.
 
@@ -42,14 +50,17 @@ Upload `wall/dist/` to any static host, in any folder.
 | `packages/builder` | The ffmpeg pipeline: probing, clips, tiles, renditions and the cache. |
 | `packages/viewer` | The WebGL viewer (Vite build), copied into every output folder. |
 | `packages/cli` | The `vmap` command and preview server. |
+| `packages/studio` | VideoMap Studio: a Node API server (uploads, build queue, export) and its Preact web UI. |
 | `spike/` | The milestone 0 device test. |
 
 ## Development
 
 ```sh
 npm test            # unit tests + ffmpeg integration tests (skipped without ffmpeg)
-npm run test:e2e    # viewer in headless Chromium (needs ffmpeg + npx playwright install chromium)
+npm run test:e2e    # viewer and Studio in headless Chromium (needs ffmpeg + npx playwright install chromium)
 npm run typecheck   # tsc --checkJs over all packages
 npm run dev:viewer  # viewer dev server; set VMAP_SCENE=path/to/a/built/dist
+npm run dev:studio  # Studio UI dev server; proxies to a running "vmap studio"
+npm run build:studio # rebuild the Studio UI (npm install does this too)
 npm run schema      # regenerate packages/core/schema/scene.schema.json after editing schema.js
 ```

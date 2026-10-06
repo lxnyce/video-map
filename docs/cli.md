@@ -34,6 +34,7 @@ mainstream host and CDN does.
 | `vmap info [dist]` | Summarizes a build output: layout, pyramid, groups, alternate layouts and sizes. `--json`. |
 | `vmap doctor` | Checks ffmpeg/ffprobe and the encoders and filters vmap uses, and test-encodes with each hardware H.264 encoder. |
 | `vmap clean [scene]` | Deletes the build cache next to the scene (or `--cache <dir>`). The next build re-encodes clips and tiles from the sources. |
+| `vmap studio` | Starts VideoMap Studio, a local web app to upload videos, edit them and the layout, build, preview and download walls. `--data <dir>`, `--port` (default 5170), `--host` (default 127.0.0.1), `--allow-host`, `--open`. See [studio.md](studio.md). |
 
 Exit codes: `0` success, `1` failure (e.g. ffmpeg error), `2` invalid
 usage or an invalid scene. `VMAP_DEBUG=1` prints the failing ffmpeg command

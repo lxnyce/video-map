@@ -9,6 +9,7 @@
   "files": ["src"],
   "dependencies": {
     "@videomap/builder": "0.1.0",
-    "@videomap/core": "0.1.0"
+    "@videomap/core": "0.1.0",
+    "@videomap/studio": "0.1.0"
   }
 }

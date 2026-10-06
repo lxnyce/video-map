@@ -1,6 +1,6 @@
 # VideoMap — Implementation Plan (for review)
 
-**Status:** Milestones 1–5 built · **Revision 2:** 2026-10-05
+**Status:** Milestones 1–6 built · **Revision 2:** 2026-10-05
 
 > **What changed in revision 2:** videos are no longer cropped by default
 > (G12). The packing strategy can now be chosen, and masonry columns are the
@@ -114,7 +114,7 @@ video-map/
 │  ├─ builder/     # ffmpeg/ffprobe pipeline: probe, normalize, composite, encode, posters, cache
 │  ├─ cli/         # `vmap` command (thin wrapper over builder)
 │  ├─ viewer/      # Static runtime: WebGL renderer, tile scheduler, controls, floating player, UI
-│  └─ studio/      # Authoring app: web UI (Vite) + Node API server (Fastify) + job queue
+│  └─ studio/      # Authoring app: web UI (Vite, Preact) + Node API server (node:http) + job queue
 ├─ samples/        # Sample scene manifests (+ script to fetch openly licensed source clips)
 ├─ docs/
 └─ test/fixtures/  # Synthetic clips generated with ffmpeg `testsrc` (no binaries committed)
@@ -723,7 +723,7 @@ The authoring app. The viewer stays fully static; the Studio is for making scene
     fit, and full renditions on or off (tiles only).
   * Build settings: a **hardware encoding** switch, which defaults to on and
     lists the encoders that work, a "use hardware for final tiles" switch
-    (also on by default) and the number of hardware sessions. These
+    (off by default since milestone 3) and the number of hardware sessions. These
     are saved per machine, because they describe the computer, not the scene.
   * Build with a progress log, then preview it in the embedded viewer.
   * A **sample scenes gallery**: one click loads a sample manifest and fetches
@@ -731,6 +731,43 @@ The authoring app. The viewer stays fully static; the Studio is for making scene
 * **Scope note:** v1 is a single-user tool run locally or on a private server,
   with no authentication. Multi-user hosting (auth, quotas, object storage)
   would come later. See §13.
+* *(As built, milestone 6: `vmap studio` starts it; docs/studio.md is the
+  guide and API reference.*
+  * *The server is plain `node:http`, not Fastify: about 25 routes,
+    streaming uploads, SSE, range requests and zips need no framework, and
+    ajv stays the only third-party runtime dependency (the UI libraries are bundled). It listens on
+    127.0.0.1 by default and, having no login, refuses what another website
+    could send through the browser: Host names other than localhost or an IP
+    address (DNS rebinding), cross-origin writes, and JSON bodies without the
+    JSON content type. It reads only files inside a project or named by its
+    scene.*
+  * *A project is a folder holding `scene.json`, `media/`, `dist/` and the
+    build cache, so it is also a plain vmap project (`vmap build` gives the
+    same output). Studio state (probes, thumbnails, partial uploads, the last
+    report) lives in its `.studio/` folder. Saves carry the revision they
+    started from; a scene changed elsewhere since (another tab, a text editor)
+    is never overwritten, and a `scene.json` that isn't valid JSON opens in the
+    JSON editor as it is. Only valid scenes are saved, except that a new
+    project may have no videos yet. Edits are undoable.*
+  * *Uploads speak tus 1.0 (creation and termination) with a small server
+    and client of our own, in 8 MB chunks with retries and resume after a
+    reload. Each finished file is probed, then added to the wall, or fills
+    in a video whose file is missing and has the same name (so an imported
+    scene can be completed by dropping its files). Thumbnails are made on
+    first request.*
+  * *Builds run one at a time in a queue shared by all projects, through
+    `buildScene` with a progress adapter and an `AbortSignal` (new in the
+    builder) for cancelling. Phases, counts and log lines stream over one SSE
+    endpoint. The zip export is a streaming writer of our own (stored entries,
+    ZIP64 past 4 GB, Content-Length known up front).*
+  * *The UI is Preact with htm templates (open question 4): plain JS, no JSX
+    step, checked by `tsc` like the rest. The layout preview runs `core`'s
+    `planWall` and the size estimate (moved from the builder to `core` for
+    this) on the probed video shapes, so it matches the build. CodeMirror is
+    loaded only with the JSON tab, and its lint marks come from the shared
+    validator, placed on the exact property through the syntax tree. The UI
+    is 82 KB gzipped without CodeMirror (135 KB more, lazily).*
+  * *The sample scenes gallery moves to milestone 7 with the sample scenes.)*
 
 ---
 
@@ -761,8 +798,8 @@ throttling, plus a manual device matrix (below) before each milestone.
 | **3. Layout and build revisions** (revision 2) — *built* | **3a.** `fit: "contain"` by default, plus a per-video `fit` override. **3b.** Tiles-only: info-card window, size estimate with and without media, `vmap clean`, `--no-keep-cache`. **3c.** Hardware encoding: detection by test encode, `auto` by default, per-encoder settings tables, a hardware session pool, libx264 fallback, `--hw`/`--hw-jobs`, `hardwareFinal` (default off after measuring, `--hw-final`), `vmap doctor` output. **3d.** Masonry: the rectangle layout model in `core` and the manifest (`videos[].rect`), the shortest-column packer as an opt-in (`grid` stays the default), both group arrangements (side-by-side column groups by default, and bands), tiles that are whole columns wide, cropped compositing for clips that cross tiles, `avoidSplits`, sync groups in the scheduler, and rectangle-based picking, highlight and labels | 3a–3c are small and independent, so they ship first. 3d changes the manifest, so it comes before curved surfaces and discovery, which build on the layout model. Tests: packer unit tests (order, column balance, aspect, `avoidSplits`); a build test with portrait, landscape and square sources that checks nothing is cropped; an encoder-fallback test with a fake failing encoder; a hardware vs libx264 timing and size comparison in the build report; a Playwright test that clicks a masonry video crossing a tile edge. *(As built: all of these exist. The no-cropping test samples each video's border pixels in the decoded tiles, including videos split across two tiles. The hardware test checks NVENC tiles with ffprobe (Main profile, a keyframe per second) and skips without a working encoder. Building masonry walls from repeated sources found two latent races, fixed here: videos sharing a source shared a clip file, and tiles with identical content shared a master file.)* |
 | **4. Curved surfaces** — *built* | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | Works with both grid and masonry. *(As built: `--view` and `--arc` on the CLI, and a default wall shape per surface. Picking, hover, outlines drawn on the surface, labels, leader lines (pointing off screen when a video is round the back), Locate and deep links all work on the curve. Tests: unit tests of the mapping (round trips, the seam, Mercator keeping shapes, centering in the band, ray hits that skip the back of the wall) and of the camera on five surface/view combinations (projection, picking, zoom about the pointer, drag, limits, the wrap, the matrix against the CPU projection). Browser tests click a video at the side of an inside cylinder, drag past the seam, and on an outside sphere check the deep link, back-side culling and that the space around the sphere picks nothing. Gyroscope look-around moved to milestone 7.)* |
 | **5. Discovery** — *built* | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | *(As built: all of these, with the search, filters and layout in the URL. Alternate layouts are `scene.layouts` (§8.4), built under `layouts/<id>/`. Window chips filter the wall, `/` focuses the search, and opening a video from the list keeps it clear of the panel and its window. Viewer JS is 29 KB gzipped. Tests: search semantics, chips, the hash, the layout model and group membership, the region query, the curved-surface view bounds; config, validation and manifest of alternates; a build with a grid and a masonry alternate (every listed tile on disk, clips reused, a dropped layout pruned); browser tests that read back pixels to check dimming, then cover the list, label flights, switching layouts both ways with windows open, the minimap and the phone sheet.)* |
-| **6. Studio** (next) | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | |
-| **7. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`), gyroscope look-around and an orientation compass for curved surfaces | |
+| **6. Studio** — *built* | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | *(As built: all of these, with `vmap studio` (§9). Also bulk edits, categories with colors, undo, save conflicts that never overwrite, resumable uploads that fill in missing files, alternate layouts in the form, per-machine build settings, build cancelling and disk-use controls. Tests: the zip writer (read back through its central directory, ZIP64 forced with a low threshold, checked with `unzip`); the scene helpers (paths, uploads, bulk edits, search, the live wall plan); the API over HTTP (projects, revisions and conflicts, settings, the request guard, tus with a wrong offset and an unreadable file, probes and the path policy, thumbnails, a dry run and a build queued together and followed over SSE, preview, zip, cache cleaning, cancelling); and the UI in Chromium (uploads, forms ↔ JSON both ways, lint marks, undo, layout stats, a build with its embedded preview and zip, a conflict, repairing a broken `scene.json`).)* |
+| **7. Samples and polish** (next) | 3–4 sample scenes and a sample gallery in the Studio, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`), gyroscope look-around and an orientation compass for curved surfaces | |
 | **Later** | More packing strategies: `rows` (justified), `random`, `rotated`, `stack` (photo stack). GPU filter chain for faster builds. A live tile crop in the tiles-only info card | The rectangle model from 3d is designed so these are new packers plus rotated compositing, not a new pipeline |
 
 **Test device matrix:** an iPhone SE (2nd gen) on iOS 16 and the latest iOS, a
@@ -798,7 +835,7 @@ mid-range Android, desktop Chrome, Firefox and Safari.
 3. **Renderer:** custom lean WebGL (recommended for mobile and bundle size) or
    three.js (faster to build, larger)?
 4. **Studio framework:** Preact or Svelte (recommended for a small, fast UI),
-   or React for familiarity?
+   or React for familiarity? *(Built with Preact and htm in milestone 6.)*
 5. **Re-layout by tag in the viewer:** is the instant dimming filter plus
    optional pre-baked layouts enough, or do you need arbitrary live re-layout?
    Live re-layout would need a different, more expensive per-cell rendering

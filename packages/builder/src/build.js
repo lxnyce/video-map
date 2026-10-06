@@ -69,6 +69,7 @@ export async function viewerDist() {
  * @property {boolean} [rebuild]    ignore cached clips, masters and outputs
  * @property {string|null} [hardwareEncoder]  skip detection and use this HW_ENCODERS entry (null: none)
  * @property {import('./progress.js').Progress} [progress]
+ * @property {AbortSignal} [signal]  cancels the build: running ffmpeg processes are killed and the build rejects with an AbortError
  */
 
 export function defaultJobs() {
@@ -84,9 +85,14 @@ export async function buildScene(opts) {
   const sceneDir = path.dirname(scenePath);
   const outDir = path.resolve(opts.outDir ?? path.join(sceneDir, 'dist'));
 
+  const signal = opts.signal;
+  signal?.throwIfAborted();
+
   const { scene, warnings: sceneWarnings } = await loadScene(scenePath);
   const preConfig = resolveConfig(scene, opts.overrides);
   const tools = createTools({ ffmpeg: opts.ffmpeg, ffprobe: opts.ffprobe });
+  const onAbort = () => tools.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
   const caps = await detectCapabilities(tools);
   assertCapabilities(caps, { stills: preConfig.output.stills, full: preConfig.output.full.enabled, vp9: preConfig.output.tileCodecs.includes('vp9') });
 
@@ -106,6 +112,7 @@ export async function buildScene(opts) {
   const toneMap = caps.zscale && caps.tonemap;
 
   try {
+    signal?.throwIfAborted();
     const plan = await planBuild({ scenePath, scene, overrides: opts.overrides, cache, tools, limit, progress, toneMapAvailable: toneMap });
     plan.warnings.unshift(...sceneWarnings);
     if (hardware.warning) plan.warnings.push(hardware.warning);
@@ -169,8 +176,11 @@ export async function buildScene(opts) {
     return { dryRun: false, plan, report: report({ plan, outDir, caps, started, counts: ctx.counts, sizes, hardware, runner, timings, cacheCleared: !keep }) };
   } catch (err) {
     tools.abort();
+    // A cancelled build fails with whatever ffmpeg said when it was killed; report the cancellation instead.
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException('The build was cancelled', 'AbortError');
     throw err;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     progress.close();
     await cache.save();
   }

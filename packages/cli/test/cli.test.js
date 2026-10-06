@@ -35,6 +35,8 @@ describe('vmap CLI', () => {
     assert.equal(help.code, 0);
     assert.match(help.stdout, /vmap build <scene.json>/);
     assert.match((await vmap(['build', '--help'], dir)).stdout, /--preview-duration/);
+    assert.match((await vmap(['studio', '--help'], dir)).stdout, /--data <dir>/);
+    assert.equal((await vmap(['studio', '--port', 'x'], dir)).code, 2);
     const bad = await vmap(['frobnicate'], dir);
     assert.equal(bad.code, 2);
     assert.match(bad.stderr, /Unknown command/);

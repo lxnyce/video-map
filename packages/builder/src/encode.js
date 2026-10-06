@@ -1,7 +1,12 @@
 // ffmpeg argument builders. Pure functions, so they can be unit-tested and
 // inspected with --dry-run without running ffmpeg.
 
+import { isWebCompatible } from '@videomap/core';
+
 /** @typedef {import('./probe.js').ProbeInfo} ProbeInfo */
+
+/** Can the source be remuxed as the full rendition? It lives in core, which also estimates sizes in the Studio. */
+export { isWebCompatible };
 /** @typedef {import('@videomap/core').Size} Size */
 
 export const ENCODER_VERSION = 2; // bump to invalidate cached intermediates
@@ -372,21 +377,6 @@ export function worthHwDecode(p) {
 /** Clips at least this many pixels are encoded on the GPU; smaller ones are cheap for x264, and their sessions are better spent on tiles. */
 export const HW_CLIP_PIXELS = 1280 * 720;
 
-/**
- * Can the source be served as-is (remuxed) as the full rendition?
- * @param {ProbeInfo} p
- * @param {number} maxHeight
- */
-export function isWebCompatible(p, maxHeight) {
-  return p.videoCodec === 'h264'
-    && (p.pixFmt === 'yuv420p' || p.pixFmt === 'yuvj420p')
-    && p.height <= maxHeight
-    && (p.audioCodec === null || p.audioCodec === 'aac')
-    && /mp4|mov/.test(p.container)
-    && p.rotation === 0
-    && Math.abs(p.sar - 1) <= 0.01
-    && !p.hdr;
-}
 
 /**
  * Full-resolution rendition for the floating player.
