@@ -159,6 +159,33 @@ export function parentGraph(children, tile, background) {
   return `${doubled};[d]scale=${tile.w}:${tile.h}:flags=area,setsar=1[t]`;
 }
 
+/**
+ * Graph for the level-0 overview tile: the level-1 children stacked 2×2,
+ * cropped to the wall and scaled to fit one tile (anchored top-left).
+ * @param {Array<{ dx: number, dy: number }>} children in input order
+ * @param {Size} tile
+ * @param {Size} content wall size in level-1 pixels
+ * @param {number} scale level-0 pixels per level-1 pixel
+ * @param {string} background
+ */
+export function overviewGraph(children, tile, content, scale, background) {
+  const positions = children.map((c) => ({ x: c.dx * tile.w, y: c.dy * tile.h }));
+  const doubled = stackGraph(positions, { w: tile.w * 2, h: tile.h * 2 }, background).replace(/\[t\]$/, '[d]');
+  const cw = Math.min(tile.w * 2, evenCeil(content.w));
+  const ch = Math.min(tile.h * 2, evenCeil(content.h));
+  const w = Math.min(tile.w, evenRound(content.w * scale));
+  const h = Math.min(tile.h, evenRound(content.h * scale));
+  return `${doubled};[d]crop=${cw}:${ch}:0:0,scale=${w}:${h}:flags=area,pad=${tile.w}:${tile.h}:0:0:color=${ffColor(background)},setsar=1[t]`;
+}
+
+function evenCeil(x) {
+  return Math.ceil(x / 2) * 2;
+}
+
+function evenRound(x) {
+  return Math.max(2, Math.round(x / 2) * 2);
+}
+
 function stillEncode() {
   return ['-c:v', 'libwebp', '-quality', '75', '-compression_level', '4'];
 }

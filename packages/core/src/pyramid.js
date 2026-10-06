@@ -5,6 +5,12 @@
 // cells per tile along each axis, so a cell never straddles two tiles at any
 // level. Tiles always have the same pixel size; tiles that run past the
 // content edge are filled with the background color.
+//
+// Level 0 is the exception: it is a single overview tile with the whole wall
+// scaled to fit it, rather than the next power of two down. Halving alone can
+// leave the wall filling as little as a quarter of that tile, and level 0 is
+// the view that shows every video at once on a single decoder. Every level
+// records its `scale`, so placement math stays the same for all levels.
 
 import { floorEven, formatSize } from './dims.js';
 
@@ -81,6 +87,8 @@ export function createPyramid({ cols, rows, cell, k }) {
   let maxZoom = 0;
   while (2 ** maxZoom < Math.max(deepX, deepY)) maxZoom++;
 
+  const contentWidth = cols * cell.w;
+  const contentHeight = rows * cell.h;
   const levels = [];
   for (let z = 0; z <= maxZoom; z++) {
     const f = 2 ** (maxZoom - z);
@@ -92,7 +100,27 @@ export function createPyramid({ cols, rows, cell, k }) {
       scale: 1 / f,
     });
   }
-  return { cell, k, tile, cols, rows, maxZoom, levels, contentWidth: cols * cell.w, contentHeight: rows * cell.h };
+  if (maxZoom > 0) {
+    const scale = Math.min(tile.w / contentWidth, tile.h / contentHeight);
+    levels[0] = {
+      z: 0,
+      tilesX: 1,
+      tilesY: 1,
+      cellsPerTile: { x: Math.max(cols, Math.ceil(tile.w / (cell.w * scale))), y: Math.max(rows, Math.ceil(tile.h / (cell.h * scale))) },
+      scale,
+    };
+  }
+  return { cell, k, tile, cols, rows, maxZoom, levels, contentWidth, contentHeight };
+}
+
+/**
+ * Size of the content at a level, in that level's pixels.
+ * @param {Pyramid} p
+ * @param {number} z
+ */
+export function levelContentSize(p, z) {
+  const { scale } = p.levels[z];
+  return { w: p.contentWidth * scale, h: p.contentHeight * scale };
 }
 
 /**

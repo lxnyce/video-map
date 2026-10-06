@@ -46,9 +46,19 @@ describe('createPyramid', () => {
   it('matches the plan example: 400 videos → 10×10, 5×5, 3×3, 2×2, 1×1 tiles', () => {
     assert.equal(p.maxZoom, 4);
     assert.deepEqual(p.levels.map((l) => [l.tilesX, l.tilesY]), [[1, 1], [2, 2], [3, 3], [5, 5], [10, 10]]);
-    assert.deepEqual(p.levels.map((l) => l.scale), [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1]);
+    assert.deepEqual(p.levels.slice(1).map((l) => l.scale), [1 / 8, 1 / 4, 1 / 2, 1]);
     assert.equal(p.contentWidth, 7680);
     assert.equal(p.contentHeight, 4320);
+  });
+
+  it('scales the wall to fit the level-0 overview tile instead of the next power of two', () => {
+    assert.equal(p.levels[0].scale, 0.1, '7680 px wall in a 768 px tile');
+    const odd = createPyramid({ cols: 17, rows: 17, cell: { w: 384, h: 216 }, k: { x: 2, y: 2 } });
+    assert.equal(odd.levels[1].scale, 1 / 8);
+    assert.ok(odd.levels[0].scale > 1 / 16 && odd.levels[0].scale < 1 / 8);
+    assert.ok(Math.abs(odd.contentWidth * odd.levels[0].scale - 768) < 1e-9, 'fills the tile width');
+    assert.deepEqual(tileCellRange(odd, 0, 0, 0), { col0: 0, row0: 0, col1: 17, row1: 17 });
+    assert.deepEqual(cellTile(odd, 0, 16, 16), { x: 0, y: 0 });
   });
 
   it('has a single level when everything fits in one tile', () => {
@@ -58,7 +68,7 @@ describe('createPyramid', () => {
   });
 
   it('never splits a cell across tiles at any level', () => {
-    for (const level of p.levels) {
+    for (const level of p.levels.slice(1)) {
       const tileW = p.tile.w / level.scale;
       const cellsPerTile = tileW / p.cell.w;
       assert.equal(cellsPerTile, level.cellsPerTile.x);
@@ -88,7 +98,7 @@ describe('createPyramid', () => {
   });
 
   it('places tiles in full-resolution pixels', () => {
-    assert.deepEqual(tileRect(p, 0, 0, 0), { x: 0, y: 0, w: 768 * 16, h: 432 * 16 });
+    assert.deepEqual(tileRect(p, 0, 0, 0), { x: 0, y: 0, w: 7680, h: 4320 });
     assert.deepEqual(tileRect(p, 4, 3, 2), { x: 3 * 768, y: 2 * 432, w: 768, h: 432 });
   });
 });

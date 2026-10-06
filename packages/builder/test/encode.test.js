@@ -5,6 +5,7 @@ import {
   ffColor,
   fullArgs,
   isWebCompatible,
+  overviewGraph,
   parentGraph,
   posterArgs,
   previewWindow,
@@ -89,6 +90,11 @@ describe('tile graphs', () => {
   it('builds parents from children at quadrant offsets, then halves', () => {
     const g = parentGraph([{ dx: 0, dy: 0 }, { dx: 1, dy: 1 }], { w: 512, h: 288 }, '#101318');
     assert.equal(g, '[0:v][1:v]xstack=inputs=2:layout=0_0|512_288:fill=0x101318[s];[s]pad=1024:576:0:0:color=0x101318[d];[d]scale=512:288:flags=area,setsar=1[t]');
+  });
+
+  it('crops the level-1 children to the wall and fits it into the overview tile', () => {
+    const g = overviewGraph([{ dx: 0, dy: 0 }, { dx: 1, dy: 0 }], { w: 768, h: 432 }, { w: 816, h: 459 }, 768 / 816, '#101318');
+    assert.match(g, /\[d\]crop=816:460:0:0,scale=768:432:flags=area,pad=768:432:0:0:color=0x101318,setsar=1\[t\]$/);
   });
 
   it('writes master, final and still from one composite', () => {

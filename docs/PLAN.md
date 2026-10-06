@@ -208,7 +208,10 @@ back to defaults tuned for phones.
    never needs a huge canvas in memory. It works the way `gdal2tiles` builds
    overviews. *(As built: each tile run also writes a high-quality master into
    the cache, and parents are built from masters rather than from the final
-   CRF-28 tiles, so quality doesn't degrade level after level.)*
+   CRF-28 tiles, so quality doesn't degrade level after level. Level 0 is an
+   overview tile with the whole wall scaled to fit it, not the next power of
+   two down. In a 240-video test, halving alone left the wall filling only
+   28% of that tile.)*
 7. **Encoding (tiles):** H.264 **Main** profile, `yuv420p`, no audio,
    `+faststart`, a keyframe at frame 0 and every 1 s, even pixel dimensions, CRF ~28 with a bitrate cap,
    and `-tune fastdecode`. Optional extra AV1/HEVC sources can come later

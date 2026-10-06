@@ -77,7 +77,8 @@ Flags override the scene file, which overrides the defaults.
    `duration × fps` frames. Short videos loop; long ones start about 10% in
    (or at `previewStart`).
 6. **Composite tiles.** The deepest level stacks clips with `xstack`. Each
-   level above stacks its four children and halves them. Every run writes
+   level above stacks its four children and halves them. Level 0 is an
+   overview, with the whole wall scaled to fit one tile. Every run writes
    the final H.264 tile, a WebP still, and a high-quality master in the cache.
    Parent tiles are built from masters, so quality doesn't degrade level after
    level.

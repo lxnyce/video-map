@@ -95,7 +95,10 @@ The build writes a different `scene.json` into the output folder, with
 
 - the grid (`cols`, `rows`, cell size)
 - the pyramid: tile size, URL templates, codec string, and for each level its
-  `tilesX`, `tilesY`, `scale` and the list of tiles that exist
+  `tilesX`, `tilesY`, `scale` and the list of tiles that exist. Levels 1 and
+  up halve the resolution each step. Level 0 is a single overview tile with
+  the whole wall scaled to fit it, anchored top-left. A tile's rectangle in
+  full-resolution pixels is always `(x, y, w, h) × tile size / scale`.
 - the groups and their cell rectangles
 - each video's cell, metadata, preview start, and full-rendition and poster
   paths

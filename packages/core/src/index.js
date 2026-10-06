@@ -11,6 +11,7 @@ export {
   tileChildren,
   tileRect,
   occupiedTiles,
+  levelContentSize,
 } from './pyramid.js';
 export { SCENE_FORMAT, SCENE_VERSION, PATHS, fillTemplate, createRuntimeManifest } from './manifest.js';
 export { sceneSchema } from './schema.js';

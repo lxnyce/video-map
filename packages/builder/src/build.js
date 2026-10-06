@@ -9,6 +9,7 @@ import {
   SCENE_FORMAT,
   createRuntimeManifest,
   fillTemplate,
+  levelContentSize,
   resolveConfig,
   tileCellRange,
   tileChildren,
@@ -19,6 +20,7 @@ import {
   clipArgs,
   fullArgs,
   isWebCompatible,
+  overviewGraph,
   parentGraph,
   posterArgs,
   stackGraph,
@@ -180,9 +182,12 @@ async function buildTiles(ctx) {
         graph = stackGraph(items, pyramid.tile, bg);
       } else {
         const kids = tileChildren(pyramid, z, x, y).filter((c) => masters.has(`${c.z}/${c.x}/${c.y}`));
-        masterKey = cache.key('parent', ENCODER_VERSION, kids.map((c) => [masters.get(`${c.z}/${c.x}/${c.y}`).key, c.dx, c.dy]), pyramid.tile, bg, fps, frames);
+        masterKey = cache.key(z === 0 ? 'overview' : 'parent', ENCODER_VERSION, kids.map((c) => [masters.get(`${c.z}/${c.x}/${c.y}`).key, c.dx, c.dy]),
+          pyramid.tile, bg, fps, frames, z === 0 ? [pyramid.contentWidth, pyramid.contentHeight] : null);
         inputs = kids.map((c) => masters.get(`${c.z}/${c.x}/${c.y}`).file);
-        graph = parentGraph(kids, pyramid.tile, bg);
+        graph = z === 0
+          ? overviewGraph(kids, pyramid.tile, levelContentSize(pyramid, 1), pyramid.levels[0].scale / pyramid.levels[1].scale, bg)
+          : parentGraph(kids, pyramid.tile, bg);
       }
 
       const needMaster = z > 0; // the top tile has no parent
