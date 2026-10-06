@@ -7,10 +7,10 @@ import {
   computeLayout,
   createPyramid,
   formatSize,
-  h264Level,
   occupiedTiles,
   resolveCellAndTile,
   resolveConfig,
+  tileCodec,
 } from '@videomap/core';
 import { assignIds, validateScene } from '@videomap/core/validate';
 import { exists, isUrl } from './cache.js';
@@ -136,7 +136,7 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
   warnings.push(...dims.warnings);
   const pyramid = createPyramid({ cols: layout.cols, rows: layout.rows, cell: dims.cell, k: dims.k });
   const tiles = occupiedTiles(pyramid, layout.cells);
-  const codec = h264Level(pyramid.tile.w, pyramid.tile.h, config.preview.fps);
+  const codecs = config.output.tileCodecs.map((c) => tileCodec(c, pyramid.tile.w, pyramid.tile.h, config.preview.fps));
 
   // Source warnings.
   const upscaled = [];
@@ -161,7 +161,7 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
     layout,
     pyramid,
     tiles,
-    codec,
+    codecs,
     looped,
     warnings,
     estimate: estimateSizes({ config, pyramid, tiles, sources }),

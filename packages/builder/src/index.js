@@ -1,4 +1,4 @@
-export { buildScene, defaultJobs } from './build.js';
+export { buildScene, defaultJobs, viewerDist } from './build.js';
 export { loadScene, planBuild, estimateSizes, SceneError } from './plan.js';
 export { createTools, detectCapabilities, assertCapabilities } from './ffmpeg.js';
 export { probe, parseProbe } from './probe.js';

@@ -55,6 +55,7 @@ Output
       --cell <WxH>            Size of one video at full zoom (alternative to --canvas)
       --tile <WxH>            Target tile video size (default 768x432)
       --tile-crf <n>          Tile quality, lower is better (default 28)
+      --tile-codecs <list>    Tile codecs in order of preference: h264 (default), vp9
       --surface <type>        plane | cylinder | sphere
       --no-stills             Skip the still-image pyramid
       --no-full               Skip full-resolution renditions
@@ -214,6 +215,7 @@ async function build(args) {
     cell: { type: 'string' },
     tile: { type: 'string' },
     'tile-crf': { type: 'string' },
+    'tile-codecs': { type: 'string' },
     surface: { type: 'string' },
     'no-stills': { type: 'boolean' },
     'no-full': { type: 'boolean' },
@@ -235,6 +237,10 @@ async function build(args) {
   if (values.canvas && values.cell) throw new UsageError('Use either --canvas or --cell, not both.');
   if (values.surface && !['plane', 'cylinder', 'sphere'].includes(values.surface)) throw new UsageError('--surface must be plane, cylinder or sphere.');
   if (values.fit && !['cover', 'contain'].includes(values.fit)) throw new UsageError('--fit must be cover or contain.');
+  const tileCodecs = values['tile-codecs']?.split(',').map((c) => c.trim().toLowerCase());
+  if (tileCodecs && (!tileCodecs.length || tileCodecs.some((c) => !['h264', 'vp9'].includes(c)) || new Set(tileCodecs).size !== tileCodecs.length)) {
+    throw new UsageError('--tile-codecs must be a comma-separated list of h264 and/or vp9, e.g. h264,vp9.');
+  }
 
   const overrides = {
     surface: { type: values.surface },
@@ -248,6 +254,7 @@ async function build(args) {
       cell: values.cell,
       tile: values.tile,
       tileCrf: num(values['tile-crf'], '--tile-crf', { min: 10, max: 51, int: true }),
+      tileCodecs,
       stills: values['no-stills'] ? false : undefined,
       full: {
         enabled: values['no-full'] ? false : undefined,
@@ -428,6 +435,7 @@ async function doctor(args) {
     ['ffmpeg and ffprobe', true, `ffmpeg ${caps.version}`, true],
     ['libx264 encoder', caps.libx264, 'tiles and full renditions', true],
     ['xstack filter with fill', caps.xstack && caps.xstackFill, 'compositing tiles (ffmpeg 5.1+)', true],
+    ['libvpx-vp9 encoder', caps.libvpxVp9, 'optional VP9 tiles (--tile-codecs h264,vp9)', false],
     ['libwebp encoder', caps.libwebp, 'stills and posters (otherwise use --no-stills; posters fall back to JPEG)', false],
     ['aac encoder', caps.aac, 'audio in full renditions', true],
     ['zscale + tonemap filters', caps.zscale && caps.tonemap, 'HDR sources (otherwise colors look washed out)', false],

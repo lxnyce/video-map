@@ -1,5 +1,5 @@
 export { parseSize, parseRatio, formatSize, floorEven, roundEven } from './dims.js';
-export { h264Level } from './codec.js';
+export { h264Level, vp9Level, tileCodec, TILE_CODECS } from './codec.js';
 export { DEFAULTS, DEFAULT_CELL, resolveConfig } from './config.js';
 export { computeLayout, groupVideos, blockShape } from './layout.js';
 export {

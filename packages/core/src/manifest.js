@@ -49,11 +49,11 @@ export function fillTemplate(template, vars) {
  * @param {import('./layout.js').Layout} args.layout
  * @param {ManifestVideo[]} args.videos  in the same order as layout cell `video` indexes
  * @param {Array<Array<[number, number]>>} args.tiles occupied tiles per level
- * @param {string} args.tileMime
+ * @param {Array<{ template: string, mime: string }>} args.tileSources  in order of preference
  * @param {Array<{ id: string, label?: string, color?: string }>} [args.categories]
  * @param {{ name: string, version: string }} [args.generator]
  */
-export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, tileMime, categories = [], generator }) {
+export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, tileSources, categories = [], generator }) {
   const cellOf = new Map(layout.cells.map((c) => [c.video, c]));
   return {
     format: SCENE_FORMAT,
@@ -70,7 +70,8 @@ export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, 
       tile: pyramid.tile,
       cellsPerTile: pyramid.k,
       maxZoom: pyramid.maxZoom,
-      video: { template: PATHS.tile, mime: tileMime },
+      // The viewer plays the first source the browser supports.
+      video: { ...tileSources[0], alternates: tileSources.slice(1) },
       still: config.output.stills ? { template: PATHS.still, mime: 'image/webp' } : null,
       levels: pyramid.levels.map((l) => ({ ...l, tiles: tiles[l.z] })),
     },

@@ -78,6 +78,7 @@ export async function detectCapabilities(tools) {
     version: /ffmpeg version (\S+)/.exec(versionOut)?.[1] ?? 'unknown',
     libx264: has(encoders, 'libx264'),
     libwebp: has(encoders, 'libwebp'),
+    libvpxVp9: has(encoders, 'libvpx-vp9'),
     aac: has(encoders, 'aac'),
     xstack: has(filters, 'xstack'),
     xstackFill: /\bfill\b/.test(xstackHelp),
@@ -91,7 +92,7 @@ export async function detectCapabilities(tools) {
 /**
  * Throw a helpful error when a required feature is missing.
  * @param {Capabilities} caps
- * @param {{ stills: boolean, full: boolean }} needs
+ * @param {{ stills: boolean, full: boolean, vp9?: boolean }} needs
  */
 export function assertCapabilities(caps, needs) {
   const missing = [];
@@ -99,6 +100,7 @@ export function assertCapabilities(caps, needs) {
   if (!caps.xstack || !caps.xstackFill) missing.push('the xstack filter with "fill" (ffmpeg 5.1 or newer)');
   if (needs.stills && !caps.libwebp) missing.push('the libwebp encoder (or build with --no-stills)');
   if (needs.full && !caps.aac) missing.push('the aac encoder');
+  if (needs.vp9 && !caps.libvpxVp9) missing.push('the libvpx-vp9 encoder (or drop vp9 from the tile codecs)');
   if (missing.length) {
     throw new Error(`ffmpeg ${caps.version} is missing ${missing.join(', ')}. Install a full ffmpeg build (e.g. from ffmpeg.org or your package manager).`);
   }

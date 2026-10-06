@@ -69,6 +69,13 @@ export const sceneSchema = {
         cell: { anyOf: [size, { type: 'null' }], description: 'Size of one video at full zoom; alternative to canvas.' },
         tile: size,
         tileCrf: { type: 'integer', minimum: 10, maximum: 51 },
+        tileCodecs: {
+          type: 'array',
+          items: { enum: ['h264', 'vp9'] },
+          minItems: 1,
+          uniqueItems: true,
+          description: 'Tile codecs in order of preference; the viewer plays the first one the browser supports. H.264 plays everywhere.',
+        },
         background: color,
         stills: { type: 'boolean' },
         full: {

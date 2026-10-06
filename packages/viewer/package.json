@@ -1,0 +1,20 @@
+{
+  "name": "@videomap/viewer",
+  "version": "0.1.0",
+  "description": "WebGL viewer for VideoMap scenes: a pannable, zoomable wall of tile videos with a floating player.",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@videomap/core": "0.1.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.2"
+  }
+}

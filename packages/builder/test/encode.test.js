@@ -101,12 +101,16 @@ describe('tile graphs', () => {
     const finalEncode = tileEncode({ tile: { w: 768, h: 432 }, fps: 24, crf: 28, level: '3.0' });
     assert.equal(argAfter(finalEncode, '-maxrate'), '956k');
     assert.equal(argAfter(finalEncode, '-g'), '24');
-    const args = tileArgs({ inputs: ['a.mp4', 'b.mp4'], graph: 'G[t]', fps: 24, frames: 240, finalEncode }, { master: 'm.mp4', final: 'f.mp4', still: 's.webp' });
+    const vp9 = tileEncode({ tile: { w: 768, h: 432 }, fps: 24, crf: 28, level: '30', codec: 'vp9' });
+    assert.equal(argAfter(vp9, '-c:v'), 'libvpx-vp9');
+    assert.equal(argAfter(vp9, '-crf'), '36');
+    const args = tileArgs({ inputs: ['a.mp4', 'b.mp4'], graph: 'G[t]', fps: 24, frames: 240 },
+      { master: 'm.mp4', finals: [{ encode: finalEncode, path: 'f.mp4' }, { encode: vp9, path: 'f.webm' }], still: 's.webp' });
     assert.deepEqual(args.slice(0, 4), ['-i', 'a.mp4', '-i', 'b.mp4']);
-    assert.equal(argAfter(args, '-filter_complex'), 'G[t];[t]split=3[o0][o1][o2]');
-    assert.deepEqual(args.filter((a) => /^\[o\d\]$/.test(a)), ['[o0]', '[o1]', '[o2]']);
-    assert.deepEqual(args.filter((a) => /\.(mp4|webp)$/.test(a)).slice(2), ['m.mp4', 'f.mp4', 's.webp']);
-    const still = args.slice(args.indexOf('[o2]'));
+    assert.equal(argAfter(args, '-filter_complex'), 'G[t];[t]split=4[o0][o1][o2][o3]');
+    assert.deepEqual(args.filter((a) => /^\[o\d\]$/.test(a)), ['[o0]', '[o1]', '[o2]', '[o3]']);
+    assert.deepEqual(args.filter((a) => /\.(mp4|webm|webp)$/.test(a)).slice(2), ['m.mp4', 'f.mp4', 'f.webm', 's.webp']);
+    const still = args.slice(args.indexOf('[o3]'));
     assert.equal(argAfter(still, '-frames:v'), '1');
   });
 });

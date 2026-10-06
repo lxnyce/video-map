@@ -1,9 +1,10 @@
 // Executes a build plan: normalized clips → deepest tiles → parent levels,
 // full renditions and posters in parallel, then the runtime manifest.
 
-import { copyFile, mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   PATHS,
   SCENE_FORMAT,
@@ -31,8 +32,22 @@ import { assertCapabilities, createTools, detectCapabilities } from './ffmpeg.js
 import { loadScene, planBuild } from './plan.js';
 import { createLimiter, createProgress } from './progress.js';
 
-const MANAGED_DIRS = ['tiles', 'stills', 'media', 'posters'];
-const VIEWER_ASSETS = new URL('../assets/', import.meta.url);
+const MANAGED_DIRS = ['tiles', 'stills', 'media', 'posters', 'assets'];
+const FALLBACK_VIEWER = new URL('../assets/fallback-viewer.html', import.meta.url);
+
+/**
+ * The built WebGL viewer (packages/viewer/dist), or null if it hasn't been built.
+ * @returns {Promise<string|null>}
+ */
+export async function viewerDist() {
+  try {
+    const pkg = fileURLToPath(import.meta.resolve('@videomap/viewer/package.json'));
+    const dist = path.join(path.dirname(pkg), 'dist');
+    return (await exists(path.join(dist, 'index.html'))) ? dist : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * @typedef {object} BuildOptions
@@ -66,7 +81,7 @@ export async function buildScene(opts) {
   const preConfig = resolveConfig(scene, opts.overrides);
   const tools = createTools({ ffmpeg: opts.ffmpeg, ffprobe: opts.ffprobe });
   const caps = await detectCapabilities(tools);
-  assertCapabilities(caps, { stills: preConfig.output.stills, full: preConfig.output.full.enabled });
+  assertCapabilities(caps, { stills: preConfig.output.stills, full: preConfig.output.full.enabled, vp9: preConfig.output.tileCodecs.includes('vp9') });
 
   const cache = new BuildCache(opts.cacheDir ?? path.join(sceneDir, '.vmap-cache'));
   await cache.load();
@@ -104,6 +119,8 @@ export async function buildScene(opts) {
 
     await Promise.all([buildTiles(ctx), buildMedia(ctx)]);
     await writeManifest(ctx, scene);
+    const viewer = await installViewer(outDir, ctx.produced);
+    if (!viewer) plan.warnings.push('The WebGL viewer is not built, so a basic debug viewer was used. Run "npm run build:viewer" and build again.');
     await removeStale(outDir, ctx.produced);
     cache.pruneOutputs(outDir, ctx.produced);
     const sizes = await measure(outDir);
@@ -122,7 +139,7 @@ export async function buildScene(opts) {
 
 async function buildTiles(ctx) {
   const { plan, cache, tools, limit, progress, outDir, counts } = ctx;
-  const { config, pyramid, tiles, layout, codec } = plan;
+  const { config, pyramid, tiles, layout, codecs } = plan;
   const { fps, frames } = config.preview;
   const bg = config.output.background;
 
@@ -158,7 +175,7 @@ async function buildTiles(ctx) {
 
   // 2. Tiles, deepest level first; each parent is built from its children's masters.
   const cellVideo = new Map(layout.cells.map((c) => [`${c.col},${c.row}`, c.video]));
-  const finalEncode = tileEncode({ tile: pyramid.tile, fps, crf: config.output.tileCrf, level: codec.level });
+  const finalEncodes = codecs.map((c) => ({ ...c, encode: tileEncode({ tile: pyramid.tile, fps, crf: config.output.tileCrf, level: c.level, codec: c.codec }) }));
   /** @type {Map<string, { key: string, file: string }>} */
   const masters = new Map();
   const tilePhase = progress.phase('Tiles', tiles.reduce((n, l) => n + l.length, 0));
@@ -194,14 +211,15 @@ async function buildTiles(ctx) {
       const masterFile = cache.file('masters', masterKey, 'mp4');
       masters.set(`${z}/${x}/${y}`, { key: masterKey, file: masterFile });
 
-      const rel = fillTemplate(PATHS.tile, { z, x, y });
+      const finals = finalEncodes.map((f) => ({ encode: f.encode, rel: fillTemplate(f.template, { z, x, y }) }));
       const stillRel = config.output.stills ? fillTemplate(PATHS.still, { z, x, y }) : null;
-      ctx.produced.add(rel);
-      if (stillRel) ctx.produced.add(stillRel);
-      const finalKey = cache.key('final', masterKey, finalEncode, Boolean(stillRel));
+      const outRels = [...finals.map((f) => f.rel), ...(stillRel ? [stillRel] : [])];
+      for (const r of outRels) ctx.produced.add(r);
+      const finalKey = cache.key('final', masterKey, finalEncodes.map((f) => f.encode), Boolean(stillRel));
 
       const masterOk = !needMaster || (!ctx.rebuild && (await exists(masterFile)));
-      const finalOk = !ctx.rebuild && (await upToDate(ctx, rel, finalKey)) && (!stillRel || (await upToDate(ctx, stillRel, finalKey)));
+      let finalOk = !ctx.rebuild;
+      for (const r of outRels) finalOk = finalOk && (await upToDate(ctx, r, finalKey));
       if (masterOk && finalOk) {
         counts.tiles.cached++;
         tilePhase.tick(true);
@@ -213,18 +231,22 @@ async function buildTiles(ctx) {
         graph = '[0:v]null[t]';
       }
 
-      const targets = [needMaster && !masterOk ? masterFile : null, path.join(outDir, rel), stillRel ? path.join(outDir, stillRel) : null];
-      await produce(targets.filter(Boolean), async (temps) => {
+      const writeMaster = needMaster && !masterOk;
+      const targets = [
+        ...(writeMaster ? [masterFile] : []),
+        ...finals.map((f) => path.join(outDir, f.rel)),
+        ...(stillRel ? [path.join(outDir, stillRel)] : []),
+      ];
+      await produce(targets, async (temps) => {
         const queue = [...temps];
         const outs = {
-          master: targets[0] ? queue.shift() : undefined,
-          final: queue.shift(),
-          still: targets[2] ? queue.shift() : undefined,
+          master: writeMaster ? queue.shift() : undefined,
+          finals: finals.map((f) => ({ encode: f.encode, path: queue.shift() })),
+          still: stillRel ? queue.shift() : undefined,
         };
-        await tools.run(tileArgs({ inputs, graph, fps, frames, finalEncode }, outs));
+        await tools.run(tileArgs({ inputs, graph, fps, frames }, outs));
       });
-      cache.setOutputKey(outDir, rel, finalKey);
-      if (stillRel) cache.setOutputKey(outDir, stillRel, finalKey);
+      for (const r of outRels) cache.setOutputKey(outDir, r, finalKey);
       counts.tiles.run++;
       tilePhase.tick(false);
     })));
@@ -326,12 +348,27 @@ async function writeManifest(ctx, scene) {
     layout: plan.layout,
     videos,
     tiles: plan.tiles,
-    tileMime: plan.codec.mime,
+    tileSources: plan.codecs.map((c) => ({ template: c.template, mime: c.mime })),
     categories: scene.categories ?? [],
     generator: { name: 'videomap', version: pkg.version },
   });
   await writeFile(path.join(outDir, 'scene.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  await copyFile(new URL('index.html', VIEWER_ASSETS), path.join(outDir, 'index.html'));
+}
+
+/** Copy the viewer (index.html + hashed assets) into the output. @returns {Promise<boolean>} whether the WebGL viewer was used */
+async function installViewer(outDir, produced) {
+  const dist = await viewerDist();
+  if (!dist) {
+    await copyFile(FALLBACK_VIEWER, path.join(outDir, 'index.html'));
+    return false;
+  }
+  await copyFile(path.join(dist, 'index.html'), path.join(outDir, 'index.html'));
+  const assets = path.join(dist, 'assets');
+  if (await exists(assets)) {
+    await cp(assets, path.join(outDir, 'assets'), { recursive: true });
+    for (const f of await walk(assets)) produced.add(`assets/${path.relative(assets, f).split(path.sep).join('/')}`);
+  }
+  return true;
 }
 
 /** Refuse to write somewhere a build could clobber sources or unrelated files. */
@@ -430,7 +467,7 @@ function report({ plan, outDir, caps, started, counts, sizes }) {
     content: { width: pyramid.contentWidth, height: pyramid.contentHeight },
     preview: { duration: config.preview.duration, fps: config.preview.fps },
     levels: pyramid.levels.map((l) => ({ z: l.z, tilesX: l.tilesX, tilesY: l.tilesY, tiles: tiles[l.z].length })),
-    codec: plan.codec.mime,
+    codecs: plan.codecs.map((c) => c.mime),
     jobs: counts,
     sizes,
     estimate: plan.estimate,

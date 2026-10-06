@@ -49,6 +49,7 @@ Flags override the scene file, which overrides the defaults.
 | `--cell <WxH>` | `384x216` | Size of one video at full zoom. An alternative to `--canvas`. |
 | `--tile <WxH>` | `768x432` | Target tile video size. It's snapped to a whole number of cells. |
 | `--tile-crf <n>` | `28` | Tile quality (lower is better and larger). |
+| `--tile-codecs <list>` | `h264` | Tile codecs in order of preference, e.g. `h264,vp9`. The viewer plays the first one the browser supports. VP9 tiles are smaller on Android and desktop, but slower to encode. |
 | `--preview-duration <s>` | `10` | Loop length shared by every tile. |
 | `--fps <n>` | `24` | Tile frame rate. |
 | `--group-by <spec>` | `category` | `none`, `category`, `tag:<prefix>` (tags like `place:Paris`) or `meta.<key>`. |
@@ -84,8 +85,10 @@ Flags override the scene file, which overrides the defaults.
    level.
 7. **Full renditions and posters.** Web-friendly sources (H.264/AAC MP4, at
    most `maxHeight`) are remuxed without re-encoding. Others are transcoded.
-8. **Write `scene.json` and `index.html`**, and remove files that earlier
-   builds left behind.
+8. **Write `scene.json` and install the viewer** (`index.html` + `assets/`),
+   and remove files that earlier builds left behind. If the viewer hasn't
+   been built (`npm run build:viewer`), a basic debug page is used instead,
+   with a warning.
 
 Rebuilds are incremental. Unchanged clips, tiles and renditions are reused.
 Changing only `--tile-crf` re-encodes tiles from cached masters, without
@@ -95,9 +98,10 @@ re-reading the sources.
 
 ```
 dist/
-├─ index.html                 # viewer (milestone 1: a simple debug viewer)
+├─ index.html                 # the viewer (see viewer.md)
+├─ assets/                    # viewer JS and CSS (hashed names)
 ├─ scene.json                 # runtime manifest
-├─ tiles/{z}/{x}/{y}.mp4      # tile videos, level z = 0 is one tile showing everything
+├─ tiles/{z}/{x}/{y}.mp4      # tile videos (.webm too with --tile-codecs h264,vp9); z = 0 is one overview tile
 ├─ stills/{z}/{x}/{y}.webp    # first frame of each tile
 ├─ media/{id}.mp4             # full renditions for the floating player
 └─ posters/{id}.webp

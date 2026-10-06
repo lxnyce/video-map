@@ -92,10 +92,18 @@ function masterEncode(fps) {
 
 /**
  * Final tile encode: what browsers decode (plan §5 step 7).
- * @param {{ tile: Size, fps: number, crf: number, level: string }} o
+ * @param {{ tile: Size, fps: number, crf: number, level: string, codec?: 'h264'|'vp9' }} o
  */
 export function tileEncode(o) {
   const bps = Math.round(o.tile.w * o.tile.h * o.fps * 0.12);
+  if (o.codec === 'vp9') {
+    // Constrained quality; VP9's CRF scale runs higher than x264's for similar quality.
+    return [
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-crf', String(Math.min(63, o.crf + 8)),
+      '-b:v', `${Math.round(bps / 1000)}k`, '-g', String(o.fps), '-row-mt', '1',
+      '-deadline', 'good', '-cpu-used', '4', '-an',
+    ];
+  }
   return [
     '-c:v', 'libx264', '-profile:v', 'main', '-level:v', o.level, '-pix_fmt', 'yuv420p',
     '-preset', 'medium', '-crf', String(o.crf),
@@ -123,20 +131,19 @@ export function stackGraph(positions, size, background) {
 }
 
 /**
- * One ffmpeg run that composites a tile and writes up to three outputs:
- * the cached high-quality master, the final tile and the still.
+ * One ffmpeg run that composites a tile and writes every output from it:
+ * the cached high-quality master, one final tile per codec, and the still.
  * @param {object} o
  * @param {string[]} o.inputs input files
  * @param {string} o.graph filter graph ending in [t] at final tile size
  * @param {number} o.fps
  * @param {number} o.frames
- * @param {string[]} o.finalEncode from tileEncode()
- * @param {{ master?: string, final: string, still?: string }} outs
+ * @param {{ master?: string, finals: Array<{ encode: string[], path: string }>, still?: string }} outs
  */
 export function tileArgs(o, outs) {
   const targets = [];
   if (outs.master) targets.push([...masterEncode(o.fps), '-an', '-frames:v', String(o.frames), outs.master]);
-  targets.push([...o.finalEncode, '-frames:v', String(o.frames), outs.final]);
+  for (const f of outs.finals) targets.push([...f.encode, '-frames:v', String(o.frames), f.path]);
   if (outs.still) targets.push(['-frames:v', '1', ...stillEncode(), outs.still]);
 
   const labels = targets.map((_, i) => `[o${i}]`);

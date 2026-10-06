@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { promisify } from 'node:util';
-import { buildScene } from '../src/build.js';
+import { buildScene, viewerDist } from '../src/build.js';
 
 const run = promisify(execFile);
 const hasFfmpeg = await run('ffmpeg', ['-version']).then(() => true, () => false);
@@ -96,6 +96,8 @@ describe('buildScene (ffmpeg)', { skip: !hasFfmpeg && 'ffmpeg not installed' }, 
 
     // Every listed tile and still exists; nothing else is in the managed folders.
     const expected = new Set(['index.html', 'scene.json']);
+    const viewer = await viewerDist();
+    if (viewer) for (const f of await files(path.join(viewer, 'assets'))) expected.add(`assets/${f}`);
     for (const level of scene.pyramid.levels) {
       for (const [x, y] of level.tiles) {
         expected.add(`tiles/${level.z}/${x}/${y}.mp4`);

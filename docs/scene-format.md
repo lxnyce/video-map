@@ -73,6 +73,7 @@ complete example is in [examples/scene.example.json](examples/scene.example.json
 | `cell` | `"384x216"` | Size of one video at full zoom. Set either `canvas` or `cell`, not both. |
 | `tile` | `"768x432"` | Target tile size. It's snapped to a whole number of cells (max 2048 px). |
 | `tileCrf` | `28` | x264 CRF for tiles. A bitrate cap also applies. |
+| `tileCodecs` | `["h264"]` | Tile codecs in order of preference: `"h264"`, `"vp9"`. The viewer plays the first one the browser supports. |
 | `background` | `"#101318"` | Color of empty cells and letterboxing. |
 | `stills` | `true` | Emit a WebP still per tile. |
 | `full.enabled` | `true` | Emit full renditions for the floating player. |
@@ -94,7 +95,8 @@ The build writes a different `scene.json` into the output folder, with
 `"format": "videomap-scene"`. It holds everything the viewer needs:
 
 - the grid (`cols`, `rows`, cell size)
-- the pyramid: tile size, URL templates, codec string, and for each level its
+- the pyramid: tile size, URL template and codec string for the preferred
+  tile codec (others in `video.alternates`), and for each level its
   `tilesX`, `tilesY`, `scale` and the list of tiles that exist. Levels 1 and
   up halve the resolution each step. Level 0 is a single overview tile with
   the whole wall scaled to fit it, anchored top-left. A tile's rectangle in

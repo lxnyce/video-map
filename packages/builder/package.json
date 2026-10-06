@@ -8,6 +8,7 @@
   },
   "files": ["src", "assets"],
   "dependencies": {
-    "@videomap/core": "0.1.0"
+    "@videomap/core": "0.1.0",
+    "@videomap/viewer": "0.1.0"
   }
 }

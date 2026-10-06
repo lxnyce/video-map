@@ -14,5 +14,5 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src/**/*.js", "packages/*/scripts/**/*.js", "packages/*/test/**/*.js"]
+  "include": ["packages/*/src/**/*.js", "packages/*/scripts/**/*.js", "packages/*/test/**/*.js", "packages/*/e2e/**/*.js"]
 }

@@ -216,6 +216,10 @@ back to defaults tuned for phones.
    `+faststart`, a keyframe at frame 0 and every 1 s, even pixel dimensions, CRF ~28 with a bitrate cap,
    and `-tune fastdecode`. Optional extra AV1/HEVC sources can come later
    (`<source>` negotiation).
+   *(As built: optional VP9 tiles (`--tile-codecs h264,vp9`) are written
+   from the same composite, and the viewer plays the first codec the browser
+   supports. VP9 also lets the browser tests exercise real video playback in
+   Playwright's Chromium, which has no H.264.)*
 8. **Stills pyramid:** the first frame of each tile → WebP. These give instant
    first paint, a fallback while a video tile loads, and the image for
    reduced-motion and Low Power modes.
@@ -293,7 +297,7 @@ dist/
 ### 8.1 Renderer
 
 * **A small custom WebGL renderer** (WebGL2, with a WebGL1 fallback), not
-  three.js. The geometry is just tessellated quad patches, and a few KB of
+  three.js. *(As built: about 17 KB gzipped JS for the whole viewer.)* The geometry is just tessellated quad patches, and a few KB of
   focused code beats a 150 KB+ dependency on low-end phones.
   *(Decision point: three.js would speed up development. See §13.)*
 * **One unified quadtree.** A tile (z, x, y) covers a (u,v) rectangle. A
@@ -308,7 +312,9 @@ dist/
   the tile count. A tier-dependent bias can lower it further.
 * **Fallback rendering:** while a tile's video isn't ready, the renderer draws
   the matching sub-rectangle of the nearest loaded ancestor (video or still).
-  The screen never shows holes.
+  The screen never shows holes. *(As built: it also draws the four children
+  when they're ready and the parent isn't, which covers zooming out. A spare
+  decoder plays the level-0 overview as the base layer.)*
 * Picking: ray → surface → (u,v) → cell index. This is analytic, with no GPU
   readback.
 
@@ -345,7 +351,8 @@ dist/
 ### 8.3 Interaction
 
 * Plane: drag to pan, wheel or pinch to zoom, double-tap to zoom in, with
-  inertia and bounds.
+  inertia and bounds. *(As built: double-tap zooms only on empty areas, since
+  tapping a video opens it.)*
 * Cylinder and sphere: drag to orbit or look around, pinch for field of view or
   dolly, gyroscope look-around on mobile (opt-in).
 * Keyboard: arrow keys, `+`/`-`, Tab through cells, Enter to open.
@@ -372,6 +379,8 @@ dist/
   native fullscreen, and multiple windows. Each window remembers its own
   geometry.
 * Mobile: a bottom sheet that expands to full screen. Swipe down to dismiss.
+  *(As built: if a new window or sheet covers its own cell, the camera moves
+  the cell into view.)*
 * **Link back to the original position:**
   1. The source cell gets an animated **highlight outline**, drawn in the shader
      so it follows the surface's curvature.
@@ -454,7 +463,7 @@ throttling, plus a manual device matrix (below) before each milestone.
 |---|---|---|
 | **0. Feasibility spike** (first) — *built, awaiting device results* | A hard-coded page playing N 512/768 px H.264 tiles as WebGL textures on real low-end iOS and Android devices | **Validates the main risk** (decoder count and texture upload cost) and sets the tier numbers. Includes a test of seamless loop sync |
 | **1. Core + CLI MVP** — *built* | Schema, layout (plane), normalize and loop, tile pyramid, stills, full renditions, `vmap build/validate/preview`, cache | Unit tests on layout and pyramid math; integration tests on synthetic `testsrc` clips |
-| **2. Viewer MVP (plane)** | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
+| **2. Viewer MVP (plane)** — *built* | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
 | **3. Curved surfaces** | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | |
 | **4. Discovery** | Search, tag/category filtering mask, group labels, list view, minimap, optional pre-baked alternate layouts | |
 | **5. Studio** | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export | |

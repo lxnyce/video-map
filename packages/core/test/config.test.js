@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { DEFAULTS, resolveConfig } from '../src/config.js';
 import { parseRatio, parseSize } from '../src/dims.js';
-import { createRuntimeManifest, fillTemplate } from '../src/manifest.js';
+import { PATHS, createRuntimeManifest, fillTemplate } from '../src/manifest.js';
 import { sceneSchema } from '../src/schema.js';
 import { assignIds, slugify, validateScene } from '../src/validate.js';
 
@@ -105,7 +105,7 @@ describe('createRuntimeManifest', () => {
     const pyramid = { cell: { w: 2, h: 2 }, k: { x: 1, y: 1 }, tile: { w: 2, h: 2 }, cols: 2, rows: 1, maxZoom: 1, contentWidth: 4, contentHeight: 2,
       levels: [{ z: 0, tilesX: 1, tilesY: 1, cellsPerTile: { x: 2, y: 2 }, scale: 0.5 }, { z: 1, tilesX: 2, tilesY: 1, cellsPerTile: { x: 1, y: 1 }, scale: 1 }] };
     const layout = { cols: 2, rows: 1, cells: [{ video: 0, col: 1, row: 0 }, { video: 1, col: 0, row: 0 }], groups: [] };
-    const m = createRuntimeManifest({ config, pyramid, layout, videos: /** @type {any} */ ([{ id: 'a' }, { id: 'b' }]), tiles: [[[0, 0]], [[0, 0], [1, 0]]], tileMime: 'video/mp4' });
+    const m = createRuntimeManifest({ config, pyramid, layout, videos: /** @type {any} */ ([{ id: 'a' }, { id: 'b' }]), tiles: [[[0, 0]], [[0, 0], [1, 0]]], tileSources: [{ template: PATHS.tile, mime: 'video/mp4' }] });
     assert.equal(m.format, 'videomap-scene');
     assert.deepEqual(m.videos.map((v) => v.cell), [{ col: 1, row: 0 }, { col: 0, row: 0 }]);
     assert.deepEqual(m.pyramid.levels[1].tiles, [[0, 0], [1, 0]]);

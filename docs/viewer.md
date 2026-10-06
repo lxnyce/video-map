@@ -1,0 +1,143 @@
+# Viewer
+
+Every `vmap build` output folder includes the viewer: `index.html` plus a
+small hashed bundle in `assets/` (about 17 KB of gzipped JavaScript). It loads
+`scene.json` and shows the wall with WebGL. The source is in
+`packages/viewer`.
+
+## Using it
+
+| Action | Mouse / keyboard | Touch |
+|---|---|---|
+| Pan | Drag, or the arrow keys | Drag (with inertia) |
+| Zoom | Scroll wheel or trackpad pinch, `+` / `-` | Pinch, or double-tap an empty area |
+| Show everything | Grid button, or `0` | Grid button |
+| Open a video | Click it, or `Enter` on the video in the middle of the screen | Tap it |
+| Video info | Hover | Long-press |
+| Close the top window | `Esc` or ✕ | ✕, or swipe the sheet down |
+
+A video opens in a **floating window** that grows out of its cell, plays the
+full-resolution file with sound, and picks up at the moment the preview was
+showing. The window stays linked to the wall:
+
+- **Highlight:** the cell gets a pulsing outline.
+- **Leader line:** a line runs from the window to the cell. When the cell is
+  off screen, an arrow at the screen edge points to it.
+- **Locate (target icon):** flies the camera so the cell sits in the biggest
+  area the window doesn't cover.
+- **Closing** shrinks the window back into its cell.
+
+Windows can be dragged by the title bar, resized from the corner, and
+maximized with the button or by double-clicking the title. Up to four can be
+open at once. The details button shows the description, categories, tags,
+credits, links and `meta`. On narrow screens the player is a bottom sheet
+instead. If it would cover its own cell, the wall moves so the cell stays
+visible above it.
+
+The pause button in the corner stops all tile videos, leaving still frames.
+
+## Deep links
+
+The URL hash tracks the camera and the focused window, so any view can be
+shared:
+
+```
+index.html#cam=3264,1836,0.25&v=reef-01
+```
+
+- `cam=x,y,zoom` is the wall position in full-resolution pixels and the zoom
+  (CSS pixels per wall pixel).
+- `v=<id>` opens that video's window. Without `cam`, the camera centers on it.
+
+## How playback works
+
+- **Levels:** the viewer picks the coarsest pyramid level that is sharp enough
+  at the current zoom (`devicePixelRatio` is capped by the device tier).
+  It then coarsens further until the visible tiles fit the **decoder budget**.
+- **Video pool:** a fixed set of muted inline `<video>` elements, one per
+  decoder. Tiles nearest the center of the screen get them first. A tile
+  scrolled out of view pauses but keeps its slot until another tile needs it,
+  so panning back is instant. A spare slot plays the level-0 overview.
+- **Fallbacks:** while a tile's video starts, the viewer draws its still,
+  or its children (when zooming out), or the matching part of the nearest
+  coarser tile. The screen never shows holes.
+- **Sync:** every tile follows one master clock (`time mod loop length`).
+  New tiles seek to it, small drift is corrected with a tiny `playbackRate`
+  change, and large drift with a seek.
+- **Codecs:** the viewer plays the first tile codec in `scene.json` that
+  the browser supports (H.264, then VP9 if built with
+  `--tile-codecs h264,vp9`). If it can play none, it shows still frames and
+  says so.
+- **Polite defaults:**
+  - With `prefers-reduced-motion` or Save-Data, the wall starts with still
+    frames and a "Play videos" button.
+  - If the browser refuses autoplay (e.g. iOS Low Power Mode), the next tap
+    starts the videos.
+  - Playback pauses while the tab is hidden.
+
+### Device tiers
+
+| Tier | Videos at once | Texture uploads per frame | Pixel ratio cap | Still textures |
+|---|---|---|---|---|
+| low | 4 | 2 | 1 | 24 |
+| mid | 9 | 4 | 1.5 | 48 |
+| high | 16 | 8 | 1.5 | 96 |
+
+The tier comes from the device type, CPU cores, `deviceMemory` and the GPU
+name. These numbers are placeholders until the milestone 0 device results are
+in. If the frame rate stays below 22 fps while videos play, the viewer
+lowers its budget, by up to three steps.
+
+## URL parameters
+
+| Parameter | Effect |
+|---|---|
+| `?debug` | Show a HUD: fps, tier, level, video slots (`f`ree/`l`oading/`p`laying/`i`dle), drift, uploads, stills, codec |
+| `?tier=low\|mid\|high` | Force a tier |
+| `?budget=n` | Force the number of concurrent tile videos |
+| `?adapt=0` | Don't lower the budget when frames are slow |
+| `?videos=0` | Start with still frames |
+
+## Embedding
+
+Copy the build folder anywhere and either link to its `index.html` or put it
+in an iframe:
+
+```html
+<iframe src="/walls/nature/index.html" style="width:100%;height:80vh;border:0" allow="fullscreen"></iframe>
+```
+
+To mount it into your own page, load the bundle and call `mount`. The tile
+paths resolve relative to the scene URL:
+
+```html
+<link rel="stylesheet" href="/walls/nature/assets/index-XXXX.css">
+<div id="wall" style="height:80vh"></div>
+<script type="module">
+  // The bundle auto-mounts on #videomap; otherwise mount explicitly:
+  await import('/walls/nature/assets/index-XXXX.js');
+  VideoMap.mount(document.getElementById('wall'), { scene: '/walls/nature/scene.json' });
+</script>
+```
+
+`VideoMap.instances` lists mounted viewers, for scripting and debugging.
+
+## Theming
+
+Colors, radius and font are CSS custom properties on `.vm-root`
+(`--vm-bg`, `--vm-surface`, `--vm-accent`, `--vm-text`, `--vm-muted`,
+`--vm-radius`, `--vm-font`, …). Override them in a stylesheet loaded after the
+viewer's. The wall's background and empty cells use `output.background` from
+the scene.
+
+## Developing
+
+```sh
+npm run build:viewer                              # packages/viewer/dist (also runs on npm install)
+VMAP_SCENE=path/to/dist npm run dev:viewer        # live-reload dev server using a built scene's tiles
+npm run test:e2e                                  # builds a tiny scene and drives the viewer in Chromium
+```
+
+The end-to-end tests need ffmpeg and a Playwright browser
+(`npx playwright install chromium`). They build VP9 tiles too, because
+Playwright's Chromium can't decode H.264.

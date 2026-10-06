@@ -12,6 +12,7 @@ export const DEFAULTS = Object.freeze({
     cell: null,
     tile: '768x432',
     tileCrf: 28,
+    tileCodecs: ['h264'],
     background: '#101318',
     stills: true,
     full: { enabled: true, maxHeight: 1080, crf: 23 },
@@ -29,7 +30,7 @@ export const DEFAULT_CELL = '384x216';
  * @property {{ duration: number, fps: number, frames: number, startStrategy: 'auto'|'start', loopShort: boolean }} preview
  * @property {{ cellAspect: number, aspect: number, fit: 'cover'|'contain', groupBy: string, sortBy: string[], groupGap: number, labels: boolean }} layout
  * @property {{ canvas: import('./dims.js').Size|null, cell: import('./dims.js').Size|null, tile: import('./dims.js').Size,
- *   tileCrf: number, background: string, stills: boolean, full: { enabled: boolean, maxHeight: number, crf: number } }} output
+ *   tileCrf: number, tileCodecs: Array<'h264'|'vp9'>, background: string, stills: boolean, full: { enabled: boolean, maxHeight: number, crf: number } }} output
  */
 
 /**
