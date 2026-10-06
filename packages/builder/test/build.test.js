@@ -40,6 +40,8 @@ describe('buildScene (ffmpeg)', { skip: !hasFfmpeg && 'ffmpeg not installed' }, 
     preview: { duration: 2, fps: 6 },
     layout: { groupBy: 'category', groupGap: 0 },
     output: { cell: '64x36', tile: '128x72' },
+    // Hardware encoding has its own tests (hardware.test.js); keep these the same on every machine.
+    build: { hardware: 'off' },
     categories: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }],
   };
 

@@ -1,7 +1,9 @@
 export { parseSize, parseRatio, formatSize, floorEven, roundEven } from './dims.js';
 export { h264Level, vp9Level, tileCodec, TILE_CODECS } from './codec.js';
-export { DEFAULTS, DEFAULT_CELL, resolveConfig } from './config.js';
+export { DEFAULTS, DEFAULT_CELL, DEFAULT_COLUMN_WIDTH, DEFAULT_TILE, resolveConfig } from './config.js';
 export { computeLayout, groupVideos, blockShape } from './layout.js';
+export { computeMasonry, masonryHeight, dealColumns } from './masonry.js';
+export { planWall } from './wall.js';
 export {
   MAX_TILE_SIZE,
   resolveCellAndTile,
@@ -11,6 +13,8 @@ export {
   tileChildren,
   tileRect,
   occupiedTiles,
+  rectTiles,
+  tileContents,
   levelContentSize,
 } from './pyramid.js';
 export { SCENE_FORMAT, SCENE_VERSION, PATHS, fillTemplate, createRuntimeManifest } from './manifest.js';
@@ -18,7 +22,10 @@ export { sceneSchema } from './schema.js';
 
 /** @typedef {import('./dims.js').Size} Size */
 /** @typedef {import('./config.js').ResolvedConfig} ResolvedConfig */
+/** @typedef {import('./config.js').HardwareSetting} HardwareSetting */
 /** @typedef {import('./layout.js').Layout} Layout */
 /** @typedef {import('./layout.js').LayoutVideo} LayoutVideo */
+/** @typedef {import('./wall.js').WallLayout} WallLayout */
+/** @typedef {import('./masonry.js').MasonryLayout} MasonryLayout */
 /** @typedef {import('./pyramid.js').Pyramid} Pyramid */
 /** @typedef {import('./manifest.js').ManifestVideo} ManifestVideo */

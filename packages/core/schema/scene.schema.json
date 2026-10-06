@@ -96,10 +96,17 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "pack": {
+          "enum": [
+            "grid",
+            "masonry"
+          ],
+          "description": "\"grid\": uniform cells. \"masonry\": fixed-width columns, each video at its own aspect."
+        },
         "cellAspect": {
           "type": "string",
           "pattern": "^\\d+(\\.\\d+)?[:/]\\d+(\\.\\d+)?$",
-          "description": "Aspect ratio as W:H, e.g. 16:9"
+          "description": "Grid only: aspect of each cell."
         },
         "aspect": {
           "type": "string",
@@ -110,7 +117,31 @@
           "enum": [
             "cover",
             "contain"
-          ]
+          ],
+          "description": "Grid only: \"contain\" letterboxes the whole frame (default), \"cover\" crops to fill the cell."
+        },
+        "columnWidth": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 2048,
+          "description": "Masonry only: column width in pixels at full zoom."
+        },
+        "gap": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256,
+          "description": "Masonry only: gutter between videos in pixels at full zoom."
+        },
+        "groupArrange": {
+          "enum": [
+            "columns",
+            "bands"
+          ],
+          "description": "Masonry only: groups side by side as column groups, or stacked as full-width bands."
+        },
+        "avoidSplits": {
+          "type": "boolean",
+          "description": "Masonry only: move a video down rather than let it cross a tile edge, when it fits in one tile."
         },
         "groupBy": {
           "type": "string",
@@ -126,7 +157,8 @@
         "groupGap": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 10
+          "maximum": 10,
+          "description": "Empty cells (grid, default 1) or whole columns (masonry, default 0) between groups."
         },
         "labels": {
           "type": "boolean"
@@ -166,7 +198,7 @@
         "tile": {
           "type": "string",
           "pattern": "^\\d+[xX]\\d+$",
-          "description": "Pixel size as WIDTHxHEIGHT, e.g. 768x432"
+          "description": "Target tile video size (default 768x432 for grid, 768x1024 for masonry)."
         },
         "tileCrf": {
           "type": "integer",
@@ -197,7 +229,8 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "false builds tiles only: no media/ folder, and the viewer shows an info card instead of a player."
             },
             "maxHeight": {
               "type": "integer",
@@ -210,6 +243,35 @@
               "maximum": 51
             }
           }
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How to build, not what: CLI flags and Studio settings override these.",
+      "properties": {
+        "hardware": {
+          "enum": [
+            "auto",
+            "off",
+            "nvenc",
+            "qsv",
+            "amf",
+            "videotoolbox",
+            "vaapi"
+          ],
+          "description": "H.264 hardware encoder. \"auto\" uses the first one that passes a test encode, falling back to libx264."
+        },
+        "hardwareFinal": {
+          "type": "boolean",
+          "description": "Also use hardware for the final tiles (default false: they stay on libx264, which was faster overall and smaller)."
+        },
+        "hardwareJobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "description": "Concurrent hardware encode sessions."
         }
       }
     },
@@ -284,6 +346,13 @@
           "previewStart": {
             "type": "number",
             "minimum": 0
+          },
+          "fit": {
+            "enum": [
+              "cover",
+              "contain"
+            ],
+            "description": "Grid only: overrides layout.fit for this video."
           },
           "poster": {
             "type": "string"

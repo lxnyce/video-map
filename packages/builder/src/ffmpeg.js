@@ -1,6 +1,7 @@
 // Thin wrapper around the ffmpeg and ffprobe binaries.
 
 import { spawn } from 'node:child_process';
+import { HW_ENCODERS } from './encode.js';
 
 /**
  * @typedef {object} Tools
@@ -9,6 +10,7 @@ import { spawn } from 'node:child_process';
  * @property {(args: string[]) => Promise<void>} run       run ffmpeg
  * @property {(args: string[]) => Promise<string>} probeRaw run ffprobe, return stdout
  * @property {() => void} abort  kill every running process
+ * @property {boolean} aborted
  */
 
 /**
@@ -54,6 +56,9 @@ export function createTools(opts = {}) {
     ffprobe,
     run: (args) => exec(ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', ...args], false).then(() => {}),
     probeRaw: (args) => exec(ffprobe, ['-v', 'error', ...args], true),
+    get aborted() {
+      return aborted;
+    },
     abort() {
       aborted = true;
       for (const p of running) p.kill('SIGTERM');
@@ -84,6 +89,8 @@ export async function detectCapabilities(tools) {
     xstackFill: /\bfill\b/.test(xstackHelp),
     zscale: has(filters, 'zscale'),
     tonemap: has(filters, 'tonemap'),
+    /** Hardware H.264 encoders in this build (they may still lack a device; see hardware.js). */
+    hwListed: Object.entries(HW_ENCODERS).filter(([, e]) => has(encoders, e.codec)).map(([name]) => name),
   };
 }
 

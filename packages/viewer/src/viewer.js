@@ -7,6 +7,7 @@ import { formatHash, parseHash } from './hash.js';
 import { Input } from './input.js';
 import { byDistance, chooseLevel, occupancy } from './lod.js';
 import { Players } from './player.js';
+import { createRectIndex, normalizeScene, sharedTiles } from './rects.js';
 import { Renderer, hexToRgb } from './renderer.js';
 import { VideoPool } from './scheduler.js';
 import { StillCache } from './stills.js';
@@ -40,9 +41,10 @@ export async function mount(root, opts = {}) {
   } catch (err) {
     return showError(root, `Couldn't load the scene (${err.message}).`);
   }
-  if (scene.format !== 'videomap-scene' || scene.version !== 1) {
+  if (scene.format !== 'videomap-scene' || ![1, 2].includes(scene.version)) {
     return showError(root, 'This scene.json was not produced by a compatible version of vmap.');
   }
+  normalizeScene(scene);
   try {
     return new Viewer(root, scene, sceneUrl);
   } catch (err) {
@@ -74,8 +76,10 @@ export class Viewer {
     this.levels = p.levels;
     this.tile = p.tile;
     this.occupied = occupancy(p.levels);
-    this.cell = scene.grid.cell;
-    this.byCell = new Map(scene.videos.filter((v) => v.cell).map((v) => [`${v.cell.col},${v.cell.row}`, v]));
+    // Every video is a rectangle on the wall, whatever the packing (grid or masonry).
+    this.index = createRectIndex(/** @type {any[]} */ (scene.videos), scene.content.width, scene.content.height);
+    // Tiles that share a video (masonry) must stay tightly in sync, or the video shows a seam.
+    this.shared = sharedTiles(p.levels, p.tile, scene.videos.map((v) => v.rect));
     this.byId = new Map(scene.videos.map((v) => [v.id, v]));
     this.catLabel = new Map((scene.categories ?? []).map((c) => [c.id, c.label ?? c.id]));
     this.bg = hexToRgb(scene.background ?? '#101318');
@@ -115,7 +119,7 @@ export class Viewer {
 
     this.camera = new Camera(scene.content.width, scene.content.height);
     this.players = new Players(root, {
-      cellRect: (v) => this.cellScreenRect(v),
+      cellRect: (v) => this.screenRect(v),
       locate: (v, rect) => this.locate(v, rect),
       masterTime: () => this.clock(),
       changed: () => {
@@ -332,16 +336,12 @@ export class Viewer {
   /** Video under a viewport point, or null. */
   pick(sx, sy) {
     const p = this.camera.screenToContent(sx, sy);
-    if (p.x < 0 || p.y < 0) return null;
-    return this.byCell.get(`${Math.floor(p.x / this.cell.w)},${Math.floor(p.y / this.cell.h)}`) ?? null;
+    return this.index.at(p.x, p.y);
   }
 
-  cellContentRect(v) {
-    return { x: v.cell.col * this.cell.w, y: v.cell.row * this.cell.h, w: this.cell.w, h: this.cell.h };
-  }
-
-  cellScreenRect(v) {
-    const r = this.cellContentRect(v);
+  /** A video's rectangle in viewport CSS pixels. */
+  screenRect(v) {
+    const r = v.rect;
     const p = this.camera.contentToScreen(r.x, r.y);
     return { x: p.x, y: p.y, w: r.w * this.camera.zoom, h: r.h * this.camera.zoom };
   }
@@ -353,9 +353,9 @@ export class Viewer {
   }
 
   open(v) {
-    if (!v.cell) return;
+    if (!v.rect) return;
     this.hideTooltip();
-    const cell = this.cellScreenRect(v);
+    const cell = this.screenRect(v);
     const win = this.players.open(v, cell);
     // If the new window (e.g. the mobile sheet) covers its own cell, move the wall so the cell shows.
     const box = win.box();
@@ -387,7 +387,7 @@ export class Viewer {
       ].filter((o) => o.w > 80 && o.h > 80);
       if (options.length) region = options.sort((a, b) => b.w * b.h - a.w * a.h)[0];
     }
-    const cell = this.cellContentRect(v);
+    const cell = v.rect;
     const zoom = Math.min(cam.maxZoom, Math.max(cam.minZoom, Math.min((region.w * 0.55) / cell.w, (region.h * 0.55) / cell.h)));
     const cx = cell.x + cell.w / 2 - (region.x + region.w / 2 - vw / 2) / zoom;
     const cy = cell.y + cell.h / 2 - (region.y + region.h / 2 - vh / 2) / zoom;
@@ -435,9 +435,9 @@ export class Viewer {
     const vw = this.camera.vw;
     const vh = this.camera.vh;
     for (const { g, el: label } of this.labels) {
-      const p = this.camera.contentToScreen(g.col * this.cell.w, g.row * this.cell.h);
-      const w = g.cols * this.cell.w * this.camera.zoom;
-      const h = g.rows * this.cell.h * this.camera.zoom;
+      const p = this.camera.contentToScreen(g.x, g.y);
+      const w = g.w * this.camera.zoom;
+      const h = g.h * this.camera.zoom;
       const visible = w >= 90 && p.x < vw && p.y < vh && p.x + w > 0 && p.y + h > 0;
       label.hidden = !visible;
       if (visible) {
@@ -460,11 +460,8 @@ export class Viewer {
       else this.camera.set(cam);
     }
     const video = v ? this.byId.get(v) : null;
-    if (video?.cell && !this.players.windows.some((w) => w.video === video)) {
-      if (!cam) {
-        const r = this.cellContentRect(video);
-        this.camera.set(this.camera.viewForRect(r, { fraction: 0.4 }));
-      }
+    if (video?.rect && !this.players.windows.some((w) => w.video === video)) {
+      if (!cam) this.camera.set(this.camera.viewForRect(video.rect, { fraction: 0.4 }));
       this.open(video);
     }
     this.dirty = true;
@@ -528,7 +525,7 @@ export class Viewer {
   schedule(z, tiles, now) {
     if (!this.videoSource) return;
     const s = this.state;
-    const wanted = tiles.map(([x, y]) => ({ key: `${z}/${x}/${y}`, url: this.url(this.videoSource.template, z, x, y) }));
+    const wanted = tiles.map(([x, y]) => ({ key: `${z}/${x}/${y}`, url: this.url(this.videoSource.template, z, x, y), tight: this.shared[z].has(`${x},${y}`) }));
     // A spare decoder plays the overview, which stands in anywhere a finer tile is still loading.
     if (z > 0 && wanted.length < this.pool.size) wanted.push({ key: '0/0/0', url: this.url(this.videoSource.template, 0, 0, 0) });
     const sig = wanted.map((w) => w.key).join('|');
@@ -574,12 +571,26 @@ export class Viewer {
       this.firstPaint = true;
       this.loading.classList.add('vm-done');
     }
+    this.drawDividers();
 
-    if (this.hover && !this.players.videos.includes(this.hover)) r.outline(this.cellScreenRect(this.hover), [1, 1, 1, 0.55], 1.5);
+    if (this.hover && !this.players.videos.includes(this.hover)) r.outline(this.screenRect(this.hover), [1, 1, 1, 0.55], 1.5);
     const pulse = 0.75 + 0.25 * Math.sin(now / 260);
     const focused = this.players.focused?.video;
     for (const v of this.players.videos) {
-      r.outline(this.cellScreenRect(v), [ACCENT[0], ACCENT[1], ACCENT[2], v === focused ? pulse : 0.6], v === focused ? 2.5 : 1.5);
+      r.outline(this.screenRect(v), [ACCENT[0], ACCENT[1], ACCENT[2], v === focused ? pulse : 0.6], v === focused ? 2.5 : 1.5);
+    }
+  }
+
+  /** Masonry column groups sit edge to edge, so a thin line marks where one group ends and the next begins. */
+  drawDividers() {
+    const l = this.scene.layout;
+    if (l.pack !== 'masonry' || l.groupArrange !== 'columns') return;
+    const cam = this.camera;
+    const w = Math.max(1, Math.min(2, (l.gap || 4) * cam.zoom));
+    for (const g of this.scene.groups) {
+      if (g.x <= 0) continue;
+      const p = cam.contentToScreen(g.x - (l.gap ?? 0) / 2, g.y);
+      this.renderer.fillRect({ x: p.x - w / 2, y: p.y, w, h: g.h * cam.zoom }, [1, 1, 1, 0.16]);
     }
   }
 

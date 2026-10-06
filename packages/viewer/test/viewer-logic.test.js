@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createPyramid, occupiedTiles } from '@videomap/core';
+import { createPyramid, occupiedTiles, planWall, resolveConfig } from '@videomap/core';
 import { Camera } from '../src/camera.js';
 import { TIERS, detectTier } from '../src/device.js';
 import { formatHash, parseHash } from '../src/hash.js';
 import { byDistance, chooseLevel, idealLevel, occupancy, tilesInRect } from '../src/lod.js';
+import { createRectIndex, normalizeScene, sharedTiles } from '../src/rects.js';
 
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -162,5 +163,54 @@ describe('device tiers', () => {
     assert.equal(t.name, 'low');
     assert.equal(t.budget, 6);
     assert.equal(TIERS.low.budget, 4, 'presets are not mutated');
+  });
+});
+
+describe('video rectangles', () => {
+  it('upgrades version 1 manifests from cells to rectangles', () => {
+    const scene = normalizeScene({
+      grid: { cols: 2, rows: 1, cell: { w: 384, h: 216 } },
+      groups: [{ col: 1, row: 0, cols: 1, rows: 1 }],
+      videos: [{ id: 'a', cell: { col: 1, row: 0 } }, { id: 'b', cell: null }],
+    });
+    assert.deepEqual(scene.layout, { pack: 'grid' });
+    assert.deepEqual(scene.videos[0].rect, { x: 384, y: 0, w: 384, h: 216 });
+    assert.equal(scene.videos[1].rect, null);
+    assert.deepEqual([scene.groups[0].x, scene.groups[0].w], [384, 384]);
+  });
+
+  it('picks the video under a point, and nothing in gaps or outside the wall', () => {
+    const items = [
+      { id: 'a', rect: { x: 0, y: 0, w: 100, h: 50 } },
+      { id: 'b', rect: { x: 0, y: 60, w: 100, h: 300 } },
+      { id: 'c', rect: { x: 110, y: 0, w: 100, h: 100 } },
+      { id: 'none', rect: null },
+    ];
+    const index = createRectIndex(items, 210, 360, 64);
+    assert.equal(index.at(10, 10)?.id, 'a');
+    assert.equal(index.at(99.9, 49.9)?.id, 'a');
+    assert.equal(index.at(50, 55), null, 'gutter');
+    assert.equal(index.at(50, 300)?.id, 'b', 'tall video spanning several buckets');
+    assert.equal(index.at(105, 10), null);
+    assert.equal(index.at(150, 99)?.id, 'c');
+    assert.equal(index.at(-1, 10), null);
+    assert.equal(index.at(10, 360), null);
+  });
+
+  it('finds every video of a real masonry wall by its center', () => {
+    const videos = Array.from({ length: 80 }, (_, i) => ({ id: `v${i}`, title: `${i}`, aspect: [16 / 9, 9 / 16, 1, 4 / 3][i % 4] }));
+    const { layout } = planWall(videos, resolveConfig({ layout: { pack: 'masonry', groupBy: 'none', gap: 8 } }));
+    const items = videos.map((v, i) => ({ ...v, rect: layout.rects[i] }));
+    const index = createRectIndex(items, layout.width, layout.height);
+    for (const it of items) assert.equal(index.at(it.rect.x + it.rect.w / 2, it.rect.y + it.rect.h / 2), it);
+  });
+
+  it('groups the tiles that share a video, per level', () => {
+    const levels = [{ scale: 0.25, tilesX: 1, tilesY: 1 }, { scale: 0.5, tilesX: 1, tilesY: 2 }, { scale: 1, tilesX: 2, tilesY: 4 }];
+    const tile = { w: 100, h: 100 };
+    const shared = sharedTiles(levels, tile, [{ x: 0, y: 80, w: 100, h: 40 }, { x: 100, y: 0, w: 100, h: 50 }, null]);
+    assert.deepEqual([...shared[2]].sort(), ['0,0', '0,1'], 'the video across y=100 links two deepest tiles');
+    assert.deepEqual([...shared[1]], [], 'at level 1 it fits inside one tile');
+    assert.deepEqual([...shared[0]], [], 'level 0 is a single tile');
   });
 });

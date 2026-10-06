@@ -1,8 +1,11 @@
 // Build cache: probe results, normalized clips and tile masters, keyed by
 // content hashes so unchanged work is skipped on the next build.
 
+/** Folders of large intermediates; probes.json and outputs.json are small and stay. */
+const INTERMEDIATES = ['clips', 'masters'];
+
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export class BuildCache {
@@ -57,12 +60,65 @@ export class BuildCache {
     (this.outputs[k] ??= {})[rel] = key;
   }
 
+  /** Bytes on disk. */
+  size() {
+    return dirSize(this.dir);
+  }
+
+  /**
+   * Delete the cached clips and tile masters (--no-keep-cache). The next build
+   * re-encodes every tile from the sources; full renditions and posters in the
+   * output folder are still reused.
+   */
+  async clearIntermediates() {
+    for (const d of INTERMEDIATES) await rm(path.join(this.dir, d), { recursive: true, force: true });
+  }
+
   /** Forget output records that this build didn't produce. @param {string} outDir @param {Set<string>} keep */
   pruneOutputs(outDir, keep) {
     const rec = this.outputs[path.resolve(outDir)];
     if (!rec) return;
     for (const rel of Object.keys(rec)) if (!keep.has(rel)) delete rec[rel];
   }
+}
+
+/**
+ * Delete a whole build cache folder (`vmap clean`). Refuses folders that don't
+ * look like a vmap cache, so a wrong --cache can't delete anything else.
+ * @param {string} dir
+ * @returns {Promise<number|null>} bytes freed, or null if there was no cache
+ */
+export async function cleanCache(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const known = new Set([...INTERMEDIATES, 'probes.json', 'outputs.json']);
+  const foreign = entries.filter((e) => !known.has(e) && !/.tmp-d+$/.test(e));
+  if (foreign.length) {
+    throw new Error(`${dir} doesn't look like a vmap build cache (it contains ${foreign.slice(0, 3).join(', ')}); not deleting it.`);
+  }
+  const bytes = await dirSize(dir);
+  await rm(dir, { recursive: true, force: true });
+  return bytes;
+}
+
+/** Total size of the files under a folder (0 if it doesn't exist). @param {string} dir @returns {Promise<number>} */
+export async function dirSize(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    total += e.isDirectory() ? await dirSize(p) : (await stat(p)).size;
+  }
+  return total;
 }
 
 /** @param {string} s */

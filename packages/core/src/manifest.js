@@ -1,7 +1,8 @@
 // The runtime manifest (dist/scene.json) that the viewer loads.
 
 export const SCENE_FORMAT = 'videomap-scene';
-export const SCENE_VERSION = 1;
+// 2: videos[].rect, group rectangles and `layout` (masonry); `grid` is null for masonry.
+export const SCENE_VERSION = 2;
 
 /** Output paths, relative to the output folder. */
 export const PATHS = Object.freeze({
@@ -38,23 +39,26 @@ export function fillTemplate(template, vars) {
  * @property {boolean} hasAudio
  * @property {number} previewStart  where the preview loop starts in the source
  * @property {boolean} looped        the source is shorter than the loop and repeats
- * @property {string|null} media     full rendition path
+ * @property {string|null} media     full rendition path (null for tiles-only builds)
  * @property {string|null} poster
+ * @property {'cover'|'contain'} [fit] grid only: how the frame fills its cell
  */
 
 /**
  * @param {object} args
  * @param {import('./config.js').ResolvedConfig} args.config
  * @param {import('./pyramid.js').Pyramid} args.pyramid
- * @param {import('./layout.js').Layout} args.layout
- * @param {ManifestVideo[]} args.videos  in the same order as layout cell `video` indexes
+ * @param {import('./wall.js').WallLayout} args.layout
+ * @param {ManifestVideo[]} args.videos  in the same order as the layout's video indexes
  * @param {Array<Array<[number, number]>>} args.tiles occupied tiles per level
  * @param {Array<{ template: string, mime: string }>} args.tileSources  in order of preference
  * @param {Array<{ id: string, label?: string, color?: string }>} [args.categories]
  * @param {{ name: string, version: string }} [args.generator]
  */
 export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, tileSources, categories = [], generator }) {
-  const cellOf = new Map(layout.cells.map((c) => [c.video, c]));
+  const cellOf = new Map((layout.grid?.cells ?? []).map((c) => [c.video, c]));
+  const rectOf = new Map(layout.rects.map((r) => [r.video, r]));
+  const m = layout.masonry;
   return {
     format: SCENE_FORMAT,
     version: SCENE_VERSION,
@@ -64,7 +68,11 @@ export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, 
     surface: config.surface,
     preview: { duration: config.preview.duration, fps: config.preview.fps, frames: config.preview.frames },
     background: config.output.background,
-    grid: { cols: pyramid.cols, rows: pyramid.rows, cell: pyramid.cell },
+    layout: m
+      ? { pack: 'masonry', columnWidth: m.columnWidth, gap: m.gap, columns: m.columns, labelHeight: m.labelHeight, groupArrange: m.groupArrange }
+      : { pack: 'grid' },
+    // Grid-only fast paths (picking by cell index); null for other packings.
+    grid: layout.grid ? { cols: layout.grid.cols, rows: layout.grid.rows, cell: layout.grid.cell } : null,
     content: { width: pyramid.contentWidth, height: pyramid.contentHeight },
     pyramid: {
       tile: pyramid.tile,
@@ -80,7 +88,8 @@ export function createRuntimeManifest({ config, pyramid, layout, videos, tiles, 
     groups: layout.groups,
     videos: videos.map((v, i) => {
       const cell = cellOf.get(i);
-      return { ...v, cell: cell ? { col: cell.col, row: cell.row } : null };
+      const r = rectOf.get(i);
+      return { ...v, rect: r ? { x: r.x, y: r.y, w: r.w, h: r.h } : null, cell: cell ? { col: cell.col, row: cell.row } : null };
     }),
   };
 }

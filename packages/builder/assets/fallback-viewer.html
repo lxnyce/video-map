@@ -92,9 +92,10 @@
     $('title').textContent = scene.title;
     document.documentElement.style.setProperty('--wall-bg', scene.background);
     const p = scene.pyramid;
-    $('stats').textContent = `${scene.videos.length} videos · ${scene.grid.cols}×${scene.grid.rows} cells of ${scene.grid.cell.w}×${scene.grid.cell.h} · ${p.maxZoom + 1} levels · ${scene.preview.duration}s loop @ ${scene.preview.fps} fps`;
+    const shape = scene.grid ? `${scene.grid.cols}×${scene.grid.rows} cells of ${scene.grid.cell.w}×${scene.grid.cell.h}` : `${scene.layout.columns} masonry columns of ${scene.layout.columnWidth}px`;
+    $('stats').textContent = `${scene.videos.length} videos · ${shape} · ${p.maxZoom + 1} levels · ${scene.preview.duration}s loop @ ${scene.preview.fps} fps`;
     $('level').max = String(p.maxZoom);
-    const byCell = new Map(scene.videos.filter((v) => v.cell).map((v) => [`${v.cell.col},${v.cell.row}`, v]));
+    const at = (x, y) => scene.videos.find((v) => v.rect && x >= v.rect.x && x < v.rect.x + v.rect.w && y >= v.rect.y && y < v.rect.y + v.rect.h);
     const fill = (t, vars) => t.replace(/\{(\w+)\}/g, (_, k) => vars[k]);
 
     function showLevel(z) {
@@ -147,29 +148,28 @@
           label.className = 'label';
           label.textContent = `${g.label} (${g.count})`;
           if (g.color) label.style.borderLeft = `3px solid ${g.color}`;
-          Object.assign(label.style, { left: `${g.col * scene.grid.cell.w * level.scale}px`, top: `${g.row * scene.grid.cell.h * level.scale}px` });
+          Object.assign(label.style, { left: `${g.x * level.scale}px`, top: `${g.y * level.scale}px` });
           wall.append(label);
         }
       }
     }
 
-    // Map a click inside a tile back to its cell, the same math the WebGL viewer will use.
+    // Map a click inside a tile back to the video rectangle under it.
     function openAt(z, x, y, ev) {
       const level = p.levels[z];
       const rect = ev.currentTarget.getBoundingClientRect();
       const px = (x * p.tile.w + (ev.clientX - rect.left)) / level.scale;
       const py = (y * p.tile.h + (ev.clientY - rect.top)) / level.scale;
-      const col = Math.floor(px / scene.grid.cell.w);
-      const row = Math.floor(py / scene.grid.cell.h);
-      const video = byCell.get(`${col},${row}`);
+      const video = at(px, py);
       if (!video) return;
+      const r = video.rect;
       const hit = $('hit');
       Object.assign(hit.style, {
         display: 'block',
-        left: `${col * scene.grid.cell.w * level.scale}px`,
-        top: `${row * scene.grid.cell.h * level.scale}px`,
-        width: `${scene.grid.cell.w * level.scale}px`,
-        height: `${scene.grid.cell.h * level.scale}px`,
+        left: `${r.x * level.scale}px`,
+        top: `${r.y * level.scale}px`,
+        width: `${r.w * level.scale}px`,
+        height: `${r.h * level.scale}px`,
       });
       $('player-title').textContent = video.title;
       $('player-desc').textContent = video.description ?? '';

@@ -7,12 +7,15 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { SCENE_FORMAT, formatSize, resolveConfig } from '@videomap/core';
 import {
+  HW_ORDER,
   SceneError,
   buildScene,
+  cleanCache,
   createProgress,
   createTools,
   defaultJobs,
   detectCapabilities,
+  detectHardware,
   loadScene,
 } from '@videomap/builder';
 import { scaffoldScene } from './init.js';
@@ -28,7 +31,8 @@ Usage
   vmap build <scene.json>       Build the hostable output folder
   vmap preview [dist]           Serve an output folder locally (and on your LAN)
   vmap info [dist]              Summarize an output folder
-  vmap doctor                   Check ffmpeg and its features
+  vmap doctor                   Check ffmpeg, its features and hardware encoders
+  vmap clean [scene.json]       Delete the build cache
 
 Run "vmap <command> --help" for options.`;
 
@@ -58,7 +62,7 @@ Output
       --tile-codecs <list>    Tile codecs in order of preference: h264 (default), vp9
       --surface <type>        plane | cylinder | sphere
       --no-stills             Skip the still-image pyramid
-      --no-full               Skip full-resolution renditions
+      --no-full               Tiles only: skip full renditions (the viewer shows an info card)
       --full-max-height <px>  Max height of full renditions (default 1080)
 
 Preview loop
@@ -66,12 +70,20 @@ Preview loop
       --fps <n>               Tile frame rate (default 24)
 
 Layout
+      --pack <strategy>       grid (default) | masonry
       --group-by <spec>       none | category | tag:<prefix> | meta.<key>
-      --fit <mode>            cover | contain
+      --fit <mode>            Grid: contain (default, whole frame) | cover (crop to fill)
+      --column-width <px>     Masonry: column width at full zoom (default 384)
+      --gap <px>              Masonry: gutter between videos (default 0)
+      --group-arrange <mode>  Masonry: columns (groups side by side, default) | bands
 
 Build
   -j, --jobs <n>              Parallel ffmpeg processes (default ${defaultJobs()})
+      --hw <encoder>          auto (default) | off | nvenc | qsv | amf | videotoolbox | vaapi
+      --hw-jobs <n>           Concurrent hardware encode sessions (default 3)
+      --hw-final              Also encode the final tiles on the hardware encoder (default: libx264)
       --cache <dir>           Cache folder (default: .vmap-cache next to the scene)
+      --no-keep-cache         Delete cached clips and tile masters after a successful build
       --rebuild               Ignore the cache and re-encode everything
       --dry-run               Print the plan and size estimate without encoding
       --force                 Allow a non-empty output folder vmap didn't create
@@ -84,7 +96,14 @@ Build
       --host <addr>    Interface to listen on (default 0.0.0.0, i.e. also your LAN)
       --open           Open the browser`,
   info: `vmap info [dist] [--json]`,
-  doctor: `vmap doctor [--ffmpeg <path>] [--ffprobe <path>]`,
+  doctor: `vmap doctor [--ffmpeg <path>] [--ffprobe <path>]
+
+Checks ffmpeg's encoders and filters, and test-encodes with each hardware
+H.264 encoder (the result is cached for builds).`,
+  clean: `vmap clean [scene.json] [--cache <dir>]
+
+Deletes the build cache (.vmap-cache next to the scene, or --cache). The next
+build re-encodes clips and tiles from the sources.`,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,7 +129,7 @@ async function main(argv) {
     console.log(pkg.version);
     return EXIT.ok;
   }
-  const run = { init, validate, build, preview, info, doctor }[command];
+  const run = { init, validate, build, preview, info, doctor, clean }[command];
   if (!run) throw new UsageError(`Unknown command "${command}". Run "vmap --help".`);
   if (rest.includes('-h') || rest.includes('--help')) {
     console.log(COMMAND_HELP[command]);
@@ -222,10 +241,18 @@ async function build(args) {
     'full-max-height': { type: 'string' },
     'preview-duration': { type: 'string' },
     fps: { type: 'string' },
+    pack: { type: 'string' },
     'group-by': { type: 'string' },
     fit: { type: 'string' },
+    'column-width': { type: 'string' },
+    gap: { type: 'string' },
+    'group-arrange': { type: 'string' },
     jobs: { type: 'string', short: 'j' },
+    hw: { type: 'string' },
+    'hw-jobs': { type: 'string' },
+    'hw-final': { type: 'boolean' },
     cache: { type: 'string' },
+    'no-keep-cache': { type: 'boolean' },
     rebuild: { type: 'boolean' },
     'dry-run': { type: 'boolean' },
     force: { type: 'boolean' },
@@ -237,6 +264,9 @@ async function build(args) {
   if (values.canvas && values.cell) throw new UsageError('Use either --canvas or --cell, not both.');
   if (values.surface && !['plane', 'cylinder', 'sphere'].includes(values.surface)) throw new UsageError('--surface must be plane, cylinder or sphere.');
   if (values.fit && !['cover', 'contain'].includes(values.fit)) throw new UsageError('--fit must be cover or contain.');
+  if (values.pack && !['grid', 'masonry'].includes(values.pack)) throw new UsageError('--pack must be grid or masonry.');
+  if (values['group-arrange'] && !['columns', 'bands'].includes(values['group-arrange'])) throw new UsageError('--group-arrange must be columns or bands.');
+  if (values.hw && !['auto', 'off', ...HW_ORDER].includes(values.hw)) throw new UsageError(`--hw must be auto, off, ${HW_ORDER.join(', ')}.`);
   const tileCodecs = values['tile-codecs']?.split(',').map((c) => c.trim().toLowerCase());
   if (tileCodecs && (!tileCodecs.length || tileCodecs.some((c) => !['h264', 'vp9'].includes(c)) || new Set(tileCodecs).size !== tileCodecs.length)) {
     throw new UsageError('--tile-codecs must be a comma-separated list of h264 and/or vp9, e.g. h264,vp9.');
@@ -248,7 +278,14 @@ async function build(args) {
       duration: num(values['preview-duration'], '--preview-duration', { min: 0.1, max: 300 }),
       fps: num(values.fps, '--fps', { min: 1, max: 60, int: true }),
     },
-    layout: { groupBy: values['group-by'], fit: values.fit },
+    layout: {
+      pack: values.pack,
+      groupBy: values['group-by'],
+      fit: values.fit,
+      columnWidth: num(values['column-width'], '--column-width', { min: 32, max: 2048, int: true }),
+      gap: num(values.gap, '--gap', { min: 0, max: 256, int: true }),
+      groupArrange: values['group-arrange'],
+    },
     output: {
       canvas: values.canvas,
       cell: values.cell,
@@ -261,6 +298,11 @@ async function build(args) {
         maxHeight: num(values['full-max-height'], '--full-max-height', { min: 144, max: 4320, int: true }),
       },
     },
+    build: {
+      hardware: values.hw,
+      hardwareFinal: values['hw-final'] ? true : undefined,
+      hardwareJobs: num(values['hw-jobs'], '--hw-jobs', { min: 1, max: 32, int: true }),
+    },
   };
 
   const progress = createProgress({ mode: values.json ? 'silent' : 'auto' });
@@ -272,6 +314,7 @@ async function build(args) {
       overrides,
       jobs: num(values.jobs, '--jobs', { min: 1, max: 256, int: true }),
       cacheDir: values.cache,
+      keepCache: !values['no-keep-cache'],
       ffmpeg: values.ffmpeg,
       ffprobe: values.ffprobe,
       dryRun: values['dry-run'],
@@ -307,17 +350,37 @@ function printReport(r, dryRun) {
   console.log(dryRun ? bold(`Plan for ${r.videos} video(s) → ${out}`) : `${green('✔')} ${bold(`Built ${r.videos} video(s) in ${r.seconds}s → ${out}`)}`);
   const levelList = r.levels.map((l) => `z${l.z} ${l.tiles}`).join(', ');
   const totalTiles = r.levels.reduce((n, l) => n + l.tiles, 0);
-  row('Grid', `${r.grid.cols}×${r.grid.rows} cells of ${formatSize(r.cell)} → ${r.content.width}×${r.content.height} px${r.grid.groups ? `, ${r.grid.groups} groups` : ''}`);
+  const l = r.layout;
+  const groups = l.groups ? `, ${l.groups} groups` : '';
+  if (l.pack === 'masonry') {
+    row('Masonry', `${l.columns} columns of ${l.columnWidth}px${l.gap ? ` (gap ${l.gap})` : ''} → ${l.width}×${l.height} px${groups}${l.groups ? ` as ${l.groupArrange}` : ''}`
+      + (l.splits ? ` · ${l.splits} video(s) cross a tile edge` : ''));
+  } else {
+    row('Grid', `${l.cols}×${l.rows} cells of ${formatSize(l.cell)} → ${l.width}×${l.height} px${groups}`);
+  }
   row('Pyramid', `${r.levels.length} level(s) of ${formatSize(r.tile)} tiles: ${levelList} (${totalTiles} tiles)`);
   row('Loop', `${r.preview.duration}s at ${r.preview.fps} fps${r.looped ? ` · ${r.looped} short video(s) looped` : ''}`);
+  const e = r.encoder;
+  const hw = e.setting === 'off' ? 'hardware off' : e.detected?.length === 0 ? 'no working hardware encoder' : '';
+  row('Encoder', `${e.h264}${e.finalTiles !== e.h264 ? ` (final tiles: ${e.finalTiles})` : ''}${hw ? dim(` · ${hw}`) : ''}`
+    + (e.fallbacks ? yellow(` · ${e.fallbacks} job(s) fell back to libx264${e.disabled ? ', then hardware was turned off' : ''}`) : ''));
   if (r.jobs) {
     const j = r.jobs;
     const part = (name, c) => `${name} ${c.run + c.cached}${c.cached ? ` (${c.cached} cached)` : ''}`;
-    row('Jobs', [part('clips', j.clips), part('tiles', j.tiles), part('media', j.media), part('posters', j.posters)].join(' · ')
+    row('Jobs', [part('clips', j.clips), part('tiles', j.tiles), ...(r.full ? [part('media', j.media)] : []), part('posters', j.posters)].join(' · ')
       + (j.media.copied ? ` · ${j.media.copied} media remuxed without re-encoding` : ''));
+    const t = r.timings;
+    row('Time', `probe ${t.probe}s · clips ${t.clips}s · tiles ${t.tiles}s${r.full ? ` · media ${t.media}s` : ''} · posters ${t.posters}s`);
   }
-  const s = r.sizes ?? r.estimate;
-  row(r.sizes ? 'Size' : 'Estimate', `tiles ${mb(s.tiles)} · stills ${mb(s.stills)} · media ${mb(s.media)} · posters ${mb(s.posters)} · total ${bold(mb(s.total))}`);
+  if (r.sizes) {
+    const s = r.sizes;
+    row('Size', `tiles ${mb(s.tiles)} · stills ${mb(s.stills)}${r.full ? ` · media ${mb(s.media)}` : ''} · posters ${mb(s.posters)} · total ${bold(mb(s.total))}`);
+    row('Cache', r.cacheCleared ? 'intermediates deleted (--no-keep-cache)' : `${mb(s.cache)} in the build cache${dim(' (vmap clean deletes it)')}`);
+  } else {
+    const s = r.estimate;
+    row('Estimate', `tiles ${mb(s.tiles)} · stills ${mb(s.stills)}${r.full ? ` · media ${mb(s.media)}` : ''} · posters ${mb(s.posters)} · total ${bold(mb(s.total))}`);
+    row('', r.full ? `${mb(s.withoutMedia)} without full renditions (--no-full)` : `full renditions would add ${mb(s.withMedia - s.withoutMedia)}`);
+  }
   for (const w of r.warnings) console.log(`${yellow('!')} ${w}`);
   if (!dryRun) console.log(dim(`\nPreview it with: vmap preview ${out}`));
 }
@@ -380,8 +443,12 @@ async function info(args) {
     generator: scene.generator,
     videos: scene.videos.length,
     surface: scene.surface.type,
-    grid: `${scene.grid.cols}x${scene.grid.rows}`,
-    cell: formatSize(scene.grid.cell),
+    pack: scene.layout?.pack ?? 'grid',
+    grid: scene.grid ? `${scene.grid.cols}x${scene.grid.rows}` : null,
+    cell: scene.grid ? formatSize(scene.grid.cell) : null,
+    columns: scene.layout?.pack === 'masonry' ? scene.layout.columns : null,
+    columnWidth: scene.layout?.pack === 'masonry' ? scene.layout.columnWidth : null,
+    tilesOnly: scene.videos.every((v) => !v.media),
     tile: formatSize(scene.pyramid.tile),
     content: `${scene.content.width}x${scene.content.height}`,
     levels: scene.pyramid.levels.map((l) => l.tiles.length),
@@ -394,8 +461,9 @@ async function info(args) {
     return EXIT.ok;
   }
   console.log(bold(summary.title));
-  row('Videos', `${summary.videos} on a ${summary.surface}`);
-  row('Grid', `${summary.grid} cells of ${summary.cell} → ${summary.content} px`);
+  row('Videos', `${summary.videos} on a ${summary.surface}${summary.tilesOnly ? ', tiles only' : ''}`);
+  if (summary.pack === 'masonry') row('Masonry', `${summary.columns} columns of ${summary.columnWidth}px → ${summary.content} px`);
+  else row('Grid', `${summary.grid} cells of ${summary.cell} → ${summary.content} px`);
   row('Pyramid', `${summary.levels.length} levels of ${summary.tile} tiles: ${summary.levels.map((n, z) => `z${z} ${n}`).join(', ')}`);
   row('Loop', summary.preview);
   if (summary.groups.length) row('Groups', summary.groups.join(', '));
@@ -445,7 +513,34 @@ async function doctor(args) {
     console.log(`${pass ? green('✔') : required ? red('✖') : yellow('!')} ${name} ${dim(`- ${why}`)}`);
     if (!pass && required) ok = false;
   }
+
+  // Hardware H.264 encoders: listed ones get a test encode (the result is cached for builds).
+  console.log(`\n${bold('Hardware encoding')} ${dim('(--hw auto uses the first one that works)')}`);
+  const hw = await detectHardware(tools, caps, { refresh: true });
+  for (const e of hw.encoders) {
+    const status = e.works ? green('✔') : e.listed ? yellow('!') : dim('·');
+    const note = e.works ? 'works' : e.listed ? `listed, but the test encode failed: ${e.error}` : 'not in this ffmpeg build';
+    console.log(`${status} ${e.label} ${dim(`(${e.name}) - ${note}`)}`);
+  }
+  const first = hw.encoders.find((e) => e.works);
+  console.log(first ? `Builds will encode H.264 with ${first.label}.` : 'Builds will encode H.264 with libx264 (software).');
   return ok ? EXIT.ok : EXIT.failed;
+}
+
+// ---------------------------------------------------------------------------
+// clean
+
+async function clean(args) {
+  const { values, positionals } = parse(args, { cache: { type: 'string' } });
+  const scenePath = path.resolve(positionals[0] ?? 'scene.json');
+  const dir = path.resolve(values.cache ?? path.join(path.dirname(scenePath), '.vmap-cache'));
+  if (!values.cache && !positionals[0] && !(await stat(scenePath).catch(() => null))) {
+    throw new UsageError('No scene.json in this folder. Pass the scene file, e.g. "vmap clean wall/scene.json", or --cache <dir>.');
+  }
+  const freed = await cleanCache(dir);
+  if (freed === null) console.log(`No build cache at ${rel(dir)}.`);
+  else console.log(`${green('✔')} Deleted ${rel(dir)} (${mb(freed)}).`);
+  return EXIT.ok;
 }
 
 // ---------------------------------------------------------------------------

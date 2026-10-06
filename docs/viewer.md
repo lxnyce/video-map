@@ -34,6 +34,16 @@ credits, links and `meta`. On narrow screens the player is a bottom sheet
 instead. If it would cover its own cell, the wall moves so the cell stays
 visible above it.
 
+**Tiles-only walls** (built with `--no-full`) have no full renditions. There
+a video opens as an **info card**: a large poster with the description,
+categories, tags, credits and links, and no player controls. The card is
+linked to the wall in the same ways as a player window.
+
+**Masonry walls** (built with `--pack masonry`) show every video at its own
+shape in columns. When groups sit side by side, a thin line marks where one
+group's columns end and the next begin, and each group's label sits in a strip
+above it.
+
 The pause button in the corner stops all tile videos, leaving still frames.
 
 ## Deep links
@@ -63,7 +73,14 @@ index.html#cam=3264,1836,0.25&v=reef-01
   coarser tile. The screen never shows holes.
 - **Sync:** every tile follows one master clock (`time mod loop length`).
   New tiles seek to it, small drift is corrected with a tiny `playbackRate`
-  change, and large drift with a seek.
+  change, and large drift with a seek. In masonry walls a video can cross a
+  tile edge, so two tiles each show part of it; a frame of drift between them
+  would show as a seam. Tiles that share a video form a sync group with
+  tighter limits (nudged above 15 ms of drift and re-seeked above 120 ms,
+  against 40 ms and 300 ms for other tiles).
+- **Picking:** a click maps to a point on the wall and then to the video
+  whose rectangle contains it, through a coarse bucket index. It's the same
+  for grid and masonry walls, and gaps and label strips pick nothing.
 - **Codecs:** the viewer plays the first tile codec in `scene.json` that
   the browser supports (H.264, then VP9 if built with
   `--tile-codecs h264,vp9`). If it can play none, it shows still frames and

@@ -4,6 +4,8 @@ import { describe, it } from 'node:test';
 import { DEFAULTS, resolveConfig } from '../src/config.js';
 import { parseRatio, parseSize } from '../src/dims.js';
 import { PATHS, createRuntimeManifest, fillTemplate } from '../src/manifest.js';
+import { createPyramid } from '../src/pyramid.js';
+import { planWall } from '../src/wall.js';
 import { sceneSchema } from '../src/schema.js';
 import { assignIds, slugify, validateScene } from '../src/validate.js';
 
@@ -28,6 +30,11 @@ describe('resolveConfig', () => {
     assert.equal(c.output.canvas, null);
     assert.equal(c.layout.cellAspect, 16 / 9);
     assert.equal(c.surface.type, 'plane');
+    assert.equal(c.layout.pack, 'grid');
+    assert.equal(c.layout.fit, 'contain', 'whole frames by default');
+    assert.equal(c.layout.groupGap, 1);
+    assert.deepEqual(c.output.tile, { w: 768, h: 432 });
+    assert.deepEqual(c.build, { hardware: 'auto', hardwareFinal: false, hardwareJobs: 3 });
   });
 
   it('lets overrides win over the scene, and the scene over defaults', () => {
@@ -100,16 +107,36 @@ describe('schema file', () => {
 });
 
 describe('createRuntimeManifest', () => {
-  it('attaches cells to videos and tile lists to levels', () => {
+  it('attaches rectangles and cells to videos and tile lists to levels', () => {
     const config = resolveConfig({ title: 'T', videos: [] });
-    const pyramid = { cell: { w: 2, h: 2 }, k: { x: 1, y: 1 }, tile: { w: 2, h: 2 }, cols: 2, rows: 1, maxZoom: 1, contentWidth: 4, contentHeight: 2,
-      levels: [{ z: 0, tilesX: 1, tilesY: 1, cellsPerTile: { x: 2, y: 2 }, scale: 0.5 }, { z: 1, tilesX: 2, tilesY: 1, cellsPerTile: { x: 1, y: 1 }, scale: 1 }] };
-    const layout = { cols: 2, rows: 1, cells: [{ video: 0, col: 1, row: 0 }, { video: 1, col: 0, row: 0 }], groups: [] };
+    const pyramid = createPyramid({ cols: 2, rows: 1, cell: { w: 2, h: 2 }, k: { x: 1, y: 1 } });
+    const cells = [{ video: 0, col: 1, row: 0 }, { video: 1, col: 0, row: 0 }];
+    const layout = {
+      pack: /** @type {const} */ ('grid'), width: 4, height: 2, groups: [], masonry: null,
+      rects: [{ video: 0, x: 2, y: 0, w: 2, h: 2 }, { video: 1, x: 0, y: 0, w: 2, h: 2 }],
+      grid: { cols: 2, rows: 1, cell: { w: 2, h: 2 }, cells },
+    };
     const m = createRuntimeManifest({ config, pyramid, layout, videos: /** @type {any} */ ([{ id: 'a' }, { id: 'b' }]), tiles: [[[0, 0]], [[0, 0], [1, 0]]], tileSources: [{ template: PATHS.tile, mime: 'video/mp4' }] });
     assert.equal(m.format, 'videomap-scene');
+    assert.equal(m.version, 2);
+    assert.deepEqual(m.layout, { pack: 'grid' });
+    assert.deepEqual(m.grid, { cols: 2, rows: 1, cell: { w: 2, h: 2 } });
     assert.deepEqual(m.videos.map((v) => v.cell), [{ col: 1, row: 0 }, { col: 0, row: 0 }]);
+    assert.deepEqual(m.videos.map((v) => v.rect), [{ x: 2, y: 0, w: 2, h: 2 }, { x: 0, y: 0, w: 2, h: 2 }]);
     assert.deepEqual(m.pyramid.levels[1].tiles, [[0, 0], [1, 0]]);
     assert.equal(fillTemplate(m.pyramid.video.template, { z: 1, x: 0, y: 2 }), 'tiles/1/0/2.mp4');
+  });
+
+  it('describes a masonry wall without a grid', () => {
+    const config = resolveConfig({ layout: { pack: 'masonry', groupBy: 'none' }, videos: [] });
+    const videos = [{ id: 'a', aspect: 16 / 9 }, { id: 'b', aspect: 9 / 16 }];
+    const { layout, pyramid, tiles } = planWall(videos, config);
+    const m = createRuntimeManifest({ config, pyramid, layout, videos: /** @type {any} */ (videos), tiles, tileSources: [{ template: PATHS.tile, mime: 'video/mp4' }] });
+    assert.equal(m.grid, null);
+    assert.equal(m.pyramid.cellsPerTile, null);
+    assert.deepEqual(m.layout, { pack: 'masonry', columnWidth: 384, gap: 0, columns: layout.masonry.columns, labelHeight: 0, groupArrange: 'columns' });
+    assert.deepEqual(m.videos.map((v) => v.cell), [null, null]);
+    assert.deepEqual(m.videos.map((v) => v.rect.h), [216, 682]);
   });
 });
 

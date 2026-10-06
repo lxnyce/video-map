@@ -1,4 +1,5 @@
 // Auto-organizes videos into a grid of cells: group, sort, then pack.
+// (masonry.js is the other packing strategy; wall.js turns either into rectangles.)
 //
 // One group flows row by row into a grid shaped to the target aspect.
 // Several groups each become a rectangular block, and blocks are shelf-packed
@@ -146,7 +147,7 @@ function groupKeyFn(groupBy) {
  * @param {string[]} sortBy
  * @returns {(a: number, b: number) => number}
  */
-function comparator(videos, sortBy) {
+export function comparator(videos, sortBy) {
   const keys = sortBy.map((spec) => {
     const desc = spec.startsWith('-');
     const field = desc ? spec.slice(1) : spec;

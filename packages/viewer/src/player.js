@@ -1,7 +1,8 @@
 // Floating player windows. Each window plays one video's full rendition and
 // stays linked to its cell on the wall: the cell is outlined, a leader line
 // joins the window to the cell, "Locate" flies the camera back to it, and the
-// window grows out of (and shrinks back into) the cell.
+// window grows out of (and shrinks back into) the cell. Scenes built tiles-only
+// have no full renditions; their windows are info cards (poster and details).
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_WINDOWS = 4;
@@ -117,8 +118,9 @@ class PlayerWindow {
     this.video = video;
     this.maximized = false;
     const mobile = mgr.mobile;
+    const card = !video.media;
 
-    const win = el('section', `vm-window${mobile ? ' vm-sheet' : ''}`);
+    const win = el('section', `vm-window${mobile ? ' vm-sheet' : ''}${card ? ' vm-card' : ''}`);
     win.setAttribute('role', 'dialog');
     win.setAttribute('aria-label', video.title);
     win.tabIndex = -1;
@@ -140,24 +142,42 @@ class PlayerWindow {
     };
     btn('locate', 'Show on wall');
     this.infoBtn = btn('info', 'Details');
+    this.infoBtn.hidden = card;
     this.maxBtn = btn('max', 'Maximize');
     btn('close', 'Close');
     bar.append(title, actions);
 
     const media = el('div', 'vm-window-media');
-    const v = document.createElement('video');
-    v.controls = true;
-    v.playsInline = true;
-    v.preload = 'auto';
-    if (video.poster) v.poster = video.poster;
     const aspect = video.width && video.height ? video.width / video.height : 16 / 9;
     media.style.aspectRatio = String(aspect);
-    media.append(v);
-    this.videoEl = v;
     this.aspect = aspect;
+    /** @type {HTMLVideoElement|null} */
+    this.videoEl = null;
+    if (card) {
+      // Tiles-only scene: the poster stands in for the player.
+      if (video.poster) {
+        const img = el('img', 'vm-window-poster');
+        img.src = video.poster;
+        img.alt = '';
+        img.decoding = 'async';
+        media.append(img);
+      } else {
+        media.classList.add('vm-no-media');
+        media.dataset.message = 'No preview image';
+      }
+    } else {
+      const v = document.createElement('video');
+      v.controls = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      if (video.poster) v.poster = video.poster;
+      media.append(v);
+      this.videoEl = v;
+    }
 
     this.info = buildInfo(video, mgr.host.labelFor);
-    this.info.hidden = true;
+    // An info card shows the details right away; a player keeps them behind the button.
+    this.info.hidden = !card;
     const grip = el('div', 'vm-window-grip');
     grip.setAttribute('aria-hidden', 'true');
     win.append(bar, media, this.info, grip);
@@ -186,7 +206,8 @@ class PlayerWindow {
     this.animateFrom(from);
 
     // Continue from the moment the preview is showing, so the switch feels seamless.
-    if (video.media) {
+    const v = this.videoEl;
+    if (v) {
       v.src = video.media;
       const loop = mgr.host.masterTime();
       const start = video.looped && video.duration ? loop % video.duration : (video.previewStart ?? 0) + loop;
@@ -197,9 +218,6 @@ class PlayerWindow {
         v.muted = true;
         v.play().catch(() => {});
       });
-    } else {
-      media.classList.add('vm-no-media');
-      media.dataset.message = 'No full-resolution version';
     }
   }
 
@@ -217,8 +235,9 @@ class PlayerWindow {
     if (this.el.classList.contains('vm-sheet')) return;
     const vw = this.mgr.root.clientWidth;
     const vh = this.mgr.root.clientHeight;
-    let w = Math.min(Math.max(360, vw * 0.42), 760, vw - 32);
-    const chrome = 44 + 56;
+    let w = Math.min(Math.max(360, vw * (this.videoEl ? 0.42 : 0.34)), this.videoEl ? 760 : 560, vw - 32);
+    // Title bar plus controls, or plus the details panel on an info card.
+    const chrome = 44 + (this.videoEl ? 56 : 180);
     if (w / this.aspect + chrome > vh - 32) w = Math.max(280, (vh - 32 - chrome) * this.aspect);
     const h = w / this.aspect + chrome;
     const cx = from.x + from.w / 2;
@@ -269,10 +288,12 @@ class PlayerWindow {
   /** @param {{ x: number, y: number, w: number, h: number } | null} to cell rect to shrink into */
   destroy(to) {
     const v = this.videoEl;
-    v.pause();
+    v?.pause();
     const finish = () => {
-      v.removeAttribute('src');
-      v.load();
+      if (v) {
+        v.removeAttribute('src');
+        v.load();
+      }
       this.el.remove();
     };
     const box = this.el.getBoundingClientRect();

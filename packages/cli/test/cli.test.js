@@ -15,7 +15,9 @@ const hasFfmpeg = await execFileP('ffmpeg', ['-version']).then(() => true, () =>
 /** Run vmap and resolve with { code, stdout, stderr } whatever the exit code. */
 function vmap(args, cwd) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { cwd, env: { ...process.env, NO_COLOR: '1' } }, (err, stdout, stderr) => {
+    // Hardware detection results go to a throwaway cache, not the user's.
+    const env = { ...process.env, NO_COLOR: '1', VMAP_HW_CACHE: path.join(cwd, '.hw-cache.json') };
+    execFile(process.execPath, [CLI, ...args], { cwd, env }, (err, stdout, stderr) => {
       resolve({ code: err ? err.code : 0, stdout, stderr });
     });
   });
@@ -76,8 +78,44 @@ describe('vmap CLI', () => {
     const report = JSON.parse(r.stdout);
     assert.equal(report.ok, true);
     assert.equal(report.videos, 2);
-    assert.deepEqual(report.cell, { w: 128, h: 72 });
+    assert.deepEqual(report.layout.cell, { w: 128, h: 72 });
+    assert.equal(report.layout.pack, 'grid');
     assert.equal(report.jobs, null);
+    assert.ok(report.estimate.withMedia > report.estimate.withoutMedia);
+
+    const masonry = JSON.parse((await vmap(['build', 'scene.json', '--dry-run', '--json', '--pack', 'masonry', '--column-width', '160', '--gap', '4', '--hw', 'off'], dir)).stdout);
+    assert.deepEqual([masonry.layout.pack, masonry.layout.columnWidth, masonry.layout.gap], ['masonry', 160, 4]);
+    assert.equal(masonry.encoder.h264, 'libx264');
+    assert.equal(masonry.encoder.setting, 'off');
+
+    const text = await vmap(['build', 'scene.json', '--dry-run', '--no-full', '--hw', 'off'], dir);
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, /Encoder\s+libx264/);
+    assert.match(text.stdout, /full renditions would add/);
+  });
+
+  it('rejects unknown packing and hardware values', async () => {
+    assert.match((await vmap(['build', 'scene.json', '--pack', 'pile'], dir)).stderr, /--pack must be grid or masonry/);
+    assert.match((await vmap(['build', 'scene.json', '--hw', 'gpu'], dir)).stderr, /--hw must be auto, off, nvenc/);
+    assert.equal((await vmap(['build', 'scene.json', '--hw-jobs', '0'], dir)).code, 2);
+  });
+
+  it('clean deletes a build cache and leaves anything else alone', async () => {
+    const work = path.join(dir, 'cleanme');
+    await mkdir(path.join(work, '.vmap-cache', 'clips'), { recursive: true });
+    await writeFile(path.join(work, '.vmap-cache', 'clips', 'x.mp4'), Buffer.alloc(1000));
+    await writeFile(path.join(work, '.vmap-cache', 'probes.json'), '{}');
+    await writeFile(path.join(work, 'scene.json'), '{}');
+    const r = await vmap(['clean', 'scene.json'], work);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /Deleted .*vmap-cache/);
+    assert.match((await vmap(['clean'], work)).stdout, /No build cache/);
+    const other = path.join(work, 'notcache');
+    await mkdir(other);
+    await writeFile(path.join(other, 'keep.txt'), 'x');
+    const refused = await vmap(['clean', '--cache', 'notcache'], work);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /doesn't look like a vmap build cache/);
   });
 });
 

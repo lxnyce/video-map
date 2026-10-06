@@ -73,6 +73,18 @@ export function validateScene(scene) {
       if (w % 2 || h % 2) warnings.push({ path: `output.${key}`, message: `${value} has an odd dimension; it will be rounded down to even` });
     }
   }
+  const layout = scene.layout ?? {};
+  const masonry = layout.pack === 'masonry';
+  const otherPack = masonry ? ['cellAspect', 'fit'] : ['columnWidth', 'gap', 'groupArrange', 'avoidSplits'];
+  for (const key of otherPack) {
+    if (layout[key] !== undefined) warnings.push({ path: `layout.${key}`, message: `only applies to ${masonry ? 'the grid' : 'masonry'} packing` });
+  }
+  if (masonry) {
+    videos.forEach((v, i) => {
+      if (v.fit !== undefined) warnings.push({ path: `videos[${i}].fit`, message: 'only applies to the grid; masonry always shows the whole frame' });
+    });
+  }
+
   const band = scene.surface?.latitudeBand;
   if (band && band[0] >= band[1]) errors.push({ path: 'surface.latitudeBand', message: 'south limit must be below the north limit' });
 

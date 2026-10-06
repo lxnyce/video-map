@@ -11,6 +11,10 @@
 // leave the wall filling as little as a quarter of that tile, and level 0 is
 // the view that shows every video at once on a single decoder. Every level
 // records its `scale`, so placement math stays the same for all levels.
+//
+// Masonry walls have no cells: tiles are a whole number of columns wide and
+// any height, so videos can cross horizontal tile edges. The rectangle
+// functions at the end (rectTiles, tileContents) work for both packings.
 
 import { floorEven, formatSize } from './dims.js';
 
@@ -21,17 +25,17 @@ import { floorEven, formatSize } from './dims.js';
  * @property {number} z
  * @property {number} tilesX
  * @property {number} tilesY
- * @property {{ x: number, y: number }} cellsPerTile
+ * @property {{ x: number, y: number }|null} cellsPerTile  grid only
  * @property {number} scale  level pixels per full-resolution pixel (1 at the deepest level)
  */
 
 /**
  * @typedef {object} Pyramid
- * @property {Size} cell   cell size at the deepest level
- * @property {{ x: number, y: number }} k  cells per tile at the deepest level
+ * @property {Size|null} cell   cell size at the deepest level (grid only)
+ * @property {{ x: number, y: number }|null} k  cells per tile at the deepest level (grid only)
  * @property {Size} tile   tile size in pixels (same at every level)
- * @property {number} cols
- * @property {number} rows
+ * @property {number|null} cols  grid only
+ * @property {number|null} rows
  * @property {number} maxZoom
  * @property {Level[]} levels  indexed by z
  * @property {number} contentWidth   full-resolution content size in pixels
@@ -76,19 +80,23 @@ export function resolveCellAndTile(grid, { canvas, cell, tile, cellAspect }) {
 }
 
 /**
- * @param {{ cols: number, rows: number, cell: Size, k: { x: number, y: number } }} spec
+ * A pyramid for a grid of cells, or for any content size and tile size
+ * (masonry, where tiles are whole columns wide but videos are free in y).
+ * @param {{ cols: number, rows: number, cell: Size, k: { x: number, y: number } } | { width: number, height: number, tile: Size }} spec
  * @returns {Pyramid}
  */
-export function createPyramid({ cols, rows, cell, k }) {
-  if (cols < 1 || rows < 1) throw new Error('The grid needs at least one cell');
-  const tile = { w: k.x * cell.w, h: k.y * cell.h };
-  const deepX = Math.ceil(cols / k.x);
-  const deepY = Math.ceil(rows / k.y);
+export function createPyramid(spec) {
+  const grid = 'cols' in spec ? spec : null;
+  if (grid && (grid.cols < 1 || grid.rows < 1)) throw new Error('The grid needs at least one cell');
+  const tile = grid ? { w: grid.k.x * grid.cell.w, h: grid.k.y * grid.cell.h } : /** @type {any} */ (spec).tile;
+  const contentWidth = grid ? grid.cols * grid.cell.w : /** @type {any} */ (spec).width;
+  const contentHeight = grid ? grid.rows * grid.cell.h : /** @type {any} */ (spec).height;
+  if (!(contentWidth > 0 && contentHeight > 0)) throw new Error('The wall is empty');
+  const deepX = Math.ceil(contentWidth / tile.w);
+  const deepY = Math.ceil(contentHeight / tile.h);
   let maxZoom = 0;
   while (2 ** maxZoom < Math.max(deepX, deepY)) maxZoom++;
 
-  const contentWidth = cols * cell.w;
-  const contentHeight = rows * cell.h;
   const levels = [];
   for (let z = 0; z <= maxZoom; z++) {
     const f = 2 ** (maxZoom - z);
@@ -96,7 +104,7 @@ export function createPyramid({ cols, rows, cell, k }) {
       z,
       tilesX: Math.ceil(deepX / f),
       tilesY: Math.ceil(deepY / f),
-      cellsPerTile: { x: k.x * f, y: k.y * f },
+      cellsPerTile: grid ? { x: grid.k.x * f, y: grid.k.y * f } : null,
       scale: 1 / f,
     });
   }
@@ -106,11 +114,23 @@ export function createPyramid({ cols, rows, cell, k }) {
       z: 0,
       tilesX: 1,
       tilesY: 1,
-      cellsPerTile: { x: Math.max(cols, Math.ceil(tile.w / (cell.w * scale))), y: Math.max(rows, Math.ceil(tile.h / (cell.h * scale))) },
+      cellsPerTile: grid
+        ? { x: Math.max(grid.cols, Math.ceil(tile.w / (grid.cell.w * scale))), y: Math.max(grid.rows, Math.ceil(tile.h / (grid.cell.h * scale))) }
+        : null,
       scale,
     };
   }
-  return { cell, k, tile, cols, rows, maxZoom, levels, contentWidth, contentHeight };
+  return {
+    cell: grid?.cell ?? null,
+    k: grid?.k ?? null,
+    tile,
+    cols: grid?.cols ?? null,
+    rows: grid?.rows ?? null,
+    maxZoom,
+    levels,
+    contentWidth,
+    contentHeight,
+  };
 }
 
 /**
@@ -200,4 +220,77 @@ export function occupiedTiles(p, cells) {
       .map((key) => /** @type {[number, number]} */ (key.split(',').map(Number)))
       .sort((a, b) => a[1] - b[1] || a[0] - b[0]),
   );
+}
+
+/** @typedef {{ x: number, y: number, w: number, h: number }} Rect */
+
+/**
+ * Tiles that a set of rectangles (full-resolution px) touch, per level, sorted
+ * by row then column. The rectangle form of occupiedTiles.
+ * @param {Pyramid} p
+ * @param {Iterable<Rect>} rects
+ * @returns {Array<Array<[number, number]>>} indexed by z
+ */
+export function rectTiles(p, rects) {
+  const levels = Array.from({ length: p.maxZoom + 1 }, () => new Set());
+  for (const r of rects) {
+    const { x0, y0, x1, y1 } = deepTileRange(p, r);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) levels[p.maxZoom].add(`${x},${y}`);
+  }
+  for (let z = p.maxZoom; z > 0; z--) {
+    for (const key of levels[z]) {
+      const [x, y] = key.split(',').map(Number);
+      levels[z - 1].add(`${x >> 1},${y >> 1}`);
+    }
+  }
+  return levels.map((set) =>
+    [...set]
+      .map((key) => /** @type {[number, number]} */ (key.split(',').map(Number)))
+      .sort((a, b) => a[1] - b[1] || a[0] - b[0]),
+  );
+}
+
+/**
+ * What each deepest-level tile composites: the part of every video rectangle
+ * inside it. `crop` is in the video's own pixels, `at` in tile pixels. In a
+ * grid nothing is cropped; in masonry a video crossing a tile edge is split
+ * between the tiles it touches.
+ * @template {Rect & { video: number }} R
+ * @param {Pyramid} p
+ * @param {Iterable<R>} rects
+ * @returns {Map<string, Array<{ video: number, crop: Rect, at: { x: number, y: number } }>>} keyed "x,y"
+ */
+export function tileContents(p, rects) {
+  const out = new Map();
+  const { w: tw, h: th } = p.tile;
+  for (const r of rects) {
+    const { x0, y0, x1, y1 } = deepTileRange(p, r);
+    for (let ty = y0; ty <= y1; ty++) {
+      for (let tx = x0; tx <= x1; tx++) {
+        const left = Math.max(r.x, tx * tw);
+        const top = Math.max(r.y, ty * th);
+        const right = Math.min(r.x + r.w, (tx + 1) * tw);
+        const bottom = Math.min(r.y + r.h, (ty + 1) * th);
+        const key = `${tx},${ty}`;
+        if (!out.has(key)) out.set(key, []);
+        out.get(key).push({
+          video: r.video,
+          crop: { x: left - r.x, y: top - r.y, w: right - left, h: bottom - top },
+          at: { x: left - tx * tw, y: top - ty * th },
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Deepest-level tiles a rectangle covers (inclusive). @param {Pyramid} p @param {Rect} r */
+function deepTileRange(p, r) {
+  const { w: tw, h: th } = p.tile;
+  return {
+    x0: Math.floor(r.x / tw),
+    y0: Math.floor(r.y / th),
+    x1: Math.floor((r.x + r.w - 1) / tw),
+    y1: Math.floor((r.y + r.h - 1) / th),
+  };
 }

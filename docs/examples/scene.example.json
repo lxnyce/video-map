@@ -5,8 +5,9 @@
   "surface": { "type": "plane" },
   "preview": { "duration": 10, "fps": 24, "startStrategy": "auto", "loopShort": true },
   "layout": {
+    "pack": "grid",
     "cellAspect": "16:9",
-    "fit": "cover",
+    "fit": "contain",
     "groupBy": "category",
     "sortBy": ["title"],
     "groupGap": 1,
@@ -20,6 +21,7 @@
     "stills": true,
     "full": { "enabled": true, "maxHeight": 1080, "crf": 23 }
   },
+  "build": { "hardware": "auto", "hardwareFinal": false, "hardwareJobs": 3 },
   "categories": [
     { "id": "ocean", "label": "Ocean", "color": "#2b7bb9" },
     { "id": "forest", "label": "Forest", "color": "#3a9a5b" }
@@ -42,6 +44,7 @@
       "src": "media/canopy.mp4",
       "title": "Rainforest Canopy",
       "categories": ["forest"],
+      "fit": "cover",
       "poster": "posters/canopy.jpg"
     }
   ]

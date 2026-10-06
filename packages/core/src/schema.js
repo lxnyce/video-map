@@ -49,15 +49,20 @@ export const sceneSchema = {
       type: 'object',
       additionalProperties: false,
       properties: {
-        cellAspect: ratio,
+        pack: { enum: ['grid', 'masonry'], description: '"grid": uniform cells. "masonry": fixed-width columns, each video at its own aspect.' },
+        cellAspect: { ...ratio, description: 'Grid only: aspect of each cell.' },
         aspect: { ...ratio, description: 'Overall wall aspect when output.canvas is not set.' },
-        fit: { enum: ['cover', 'contain'] },
+        fit: { enum: ['cover', 'contain'], description: 'Grid only: "contain" letterboxes the whole frame (default), "cover" crops to fill the cell.' },
+        columnWidth: { type: 'integer', minimum: 32, maximum: 2048, description: 'Masonry only: column width in pixels at full zoom.' },
+        gap: { type: 'integer', minimum: 0, maximum: 256, description: 'Masonry only: gutter between videos in pixels at full zoom.' },
+        groupArrange: { enum: ['columns', 'bands'], description: 'Masonry only: groups side by side as column groups, or stacked as full-width bands.' },
+        avoidSplits: { type: 'boolean', description: 'Masonry only: move a video down rather than let it cross a tile edge, when it fits in one tile.' },
         groupBy: { type: 'string', pattern: '^(none|category|tag:.+|meta\\..+)$' },
         sortBy: {
           type: 'array',
           items: { type: 'string', pattern: '^-?(id|title|duration|category|src|meta\\..+)$' },
         },
-        groupGap: { type: 'integer', minimum: 0, maximum: 10 },
+        groupGap: { type: 'integer', minimum: 0, maximum: 10, description: 'Empty cells (grid, default 1) or whole columns (masonry, default 0) between groups.' },
         labels: { type: 'boolean' },
       },
     },
@@ -67,7 +72,7 @@ export const sceneSchema = {
       properties: {
         canvas: { anyOf: [size, { type: 'null' }], description: 'Full-resolution wall size; the cell size is derived from it.' },
         cell: { anyOf: [size, { type: 'null' }], description: 'Size of one video at full zoom; alternative to canvas.' },
-        tile: size,
+        tile: { ...size, description: 'Target tile video size (default 768x432 for grid, 768x1024 for masonry).' },
         tileCrf: { type: 'integer', minimum: 10, maximum: 51 },
         tileCodecs: {
           type: 'array',
@@ -82,11 +87,24 @@ export const sceneSchema = {
           type: 'object',
           additionalProperties: false,
           properties: {
-            enabled: { type: 'boolean' },
+            enabled: { type: 'boolean', description: 'false builds tiles only: no media/ folder, and the viewer shows an info card instead of a player.' },
             maxHeight: { type: 'integer', minimum: 144, maximum: 4320 },
             crf: { type: 'integer', minimum: 10, maximum: 51 },
           },
         },
+      },
+    },
+    build: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'How to build, not what: CLI flags and Studio settings override these.',
+      properties: {
+        hardware: {
+          enum: ['auto', 'off', 'nvenc', 'qsv', 'amf', 'videotoolbox', 'vaapi'],
+          description: 'H.264 hardware encoder. "auto" uses the first one that passes a test encode, falling back to libx264.',
+        },
+        hardwareFinal: { type: 'boolean', description: 'Also use hardware for the final tiles (default false: they stay on libx264, which was faster overall and smaller).' },
+        hardwareJobs: { type: 'integer', minimum: 1, maximum: 32, description: 'Concurrent hardware encode sessions.' },
       },
     },
     categories: {
@@ -113,6 +131,7 @@ export const sceneSchema = {
           categories: { type: 'array', items: { type: 'string' } },
           tags: { type: 'array', items: { type: 'string' } },
           previewStart: { type: 'number', minimum: 0 },
+          fit: { enum: ['cover', 'contain'], description: 'Grid only: overrides layout.fit for this video.' },
           poster: { type: 'string' },
           credits: {
             type: 'object',

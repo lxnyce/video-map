@@ -2,11 +2,16 @@
 // budget), each with its own texture. Tiles are assigned to slots by priority;
 // a slot whose tile is no longer wanted pauses but keeps its source, so
 // panning back to it is instant. Every playing slot follows one master clock.
+// Tiles that share a video (masonry videos crossing a tile edge) form a sync
+// group with tighter limits: a frame of drift between them shows as a seam.
 
 const HAS_RVFC = typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
-const HARD_DRIFT = 0.3;  // seconds: seek
 const RATE_GAIN = 0.5;   // playbackRate nudge per second of drift
-const COOLDOWN = 600;    // ms after a correction before the next one
+/** Drift limits in seconds (seek above `hard`, nudge the rate above `soft`) and ms between corrections. */
+const SYNC = {
+  normal: { hard: 0.3, soft: 0.04, cooldown: 600 },
+  tight: { hard: 0.12, soft: 0.015, cooldown: 300 },
+};
 
 /**
  * @typedef {object} Slot
@@ -23,6 +28,7 @@ const COOLDOWN = 600;    // ms after a correction before the next one
  * @property {number} seekAt
  * @property {number} lastTime   fallback frame detection
  * @property {number} generation increments on reassignment so stale callbacks are ignored
+ * @property {boolean} tight     the tile shares a video with another tile: keep it in tight sync
  */
 
 export class VideoPool {
@@ -82,7 +88,7 @@ export class VideoPool {
     /** @type {Slot} */
     const slot = {
       el, tex: this.renderer.createTexture(), key: null, state: 'free', ready: false, dirty: false,
-      lastWanted: 0, drift: 0, cooldownUntil: 0, seekLead: 0.12, seekAt: 0, lastTime: -1, generation: 0,
+      lastWanted: 0, drift: 0, cooldownUntil: 0, seekLead: 0.12, seekAt: 0, lastTime: -1, generation: 0, tight: false,
     };
     el.addEventListener('loadedmetadata', () => {
       if (slot.state !== 'free') this.seek(slot, this.clock() + slot.seekLead);
@@ -117,7 +123,7 @@ export class VideoPool {
 
   /**
    * Make the pool play these tiles (highest priority first).
-   * @param {Array<{ key: string, url: string }>} wanted
+   * @param {Array<{ key: string, url: string, tight?: boolean }>} wanted
    * @param {number} now
    */
   update(wanted, now) {
@@ -147,6 +153,7 @@ export class VideoPool {
   assign(slot, w, now) {
     slot.generation++;
     slot.key = w.key;
+    slot.tight = Boolean(w.tight);
     slot.state = 'loading';
     slot.ready = false;
     slot.dirty = false;
@@ -243,13 +250,14 @@ export class VideoPool {
     for (const slot of this.slots) {
       const el = slot.el;
       if (slot.state !== 'playing' || el.paused || el.seeking || now < slot.cooldownUntil) continue;
+      const limits = slot.tight ? SYNC.tight : SYNC.normal;
       const a = Math.abs(slot.drift);
-      if (a > HARD_DRIFT) {
+      if (a > limits.hard) {
         el.playbackRate = 1;
         this.seek(slot, this.clock() + slot.seekLead);
-      } else if (a > 0.04) {
+      } else if (a > limits.soft) {
         el.playbackRate = Math.min(1.1, Math.max(0.9, 1 - slot.drift * RATE_GAIN));
-        slot.cooldownUntil = now + COOLDOWN;
+        slot.cooldownUntil = now + limits.cooldown;
       } else if (el.playbackRate !== 1) {
         el.playbackRate = 1;
       }
@@ -258,7 +266,7 @@ export class VideoPool {
 
   seek(slot, t) {
     slot.seekAt = performance.now();
-    slot.cooldownUntil = slot.seekAt + COOLDOWN;
+    slot.cooldownUntil = slot.seekAt + (slot.tight ? SYNC.tight : SYNC.normal).cooldown;
     slot.el.currentTime = ((t % this.duration) + this.duration) % this.duration;
     this.stats.seeks++;
   }

@@ -6,7 +6,8 @@ Play hundreds of videos at the same time on a flat, cylindrical or spherical sur
 - Milestone 0 (device feasibility test) is built; its results from real phones are pending.
 - Milestone 1 (scene format, layout, pyramid builder and `vmap` CLI) is built.
 - Milestone 2 (WebGL viewer for the flat wall) is built: level-of-detail video tiles, pan and zoom, linked floating player windows and deep links.
-- Next is milestone 3: cylindrical and spherical surfaces.
+- Milestone 3 (layout and build revisions) is built: whole frames by default, masonry packing, hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox, VA-API) with a libx264 fallback, and tiles-only builds.
+- Next is milestone 4: cylindrical and spherical surfaces.
 
 ## Quick start
 
@@ -14,9 +15,9 @@ You need Node 22+ and ffmpeg 5.1+ (with libx264, libwebp and aac).
 
 ```sh
 npm install                                      # also builds the viewer
-npx vmap doctor                                  # check ffmpeg
+npx vmap doctor                                  # check ffmpeg and hardware encoders
 npx vmap init ~/Videos/wall -o wall/scene.json   # scaffold a scene from a folder
-npx vmap build wall/scene.json -o wall/dist      # encode the tile pyramid
+npx vmap build wall/scene.json -o wall/dist      # encode the tile pyramid (add --pack masonry for columns)
 npx vmap preview wall/dist                       # open http://localhost:8080
 ```
 

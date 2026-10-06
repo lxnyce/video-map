@@ -1,6 +1,12 @@
 # VideoMap — Implementation Plan (for review)
 
-**Status:** Draft for review · **Date:** 2026-10-05
+**Status:** Milestones 1–3 built · **Revision 2:** 2026-10-05
+
+> **What changed in revision 2:** videos are no longer cropped by default
+> (G12). The packing strategy can now be chosen, and masonry columns are the
+> first new one (G13, §5.1). Hardware encoding is on by default (G14, §5.2). A
+> tiles-only output saves disk space (G15, §5.3). A new milestone 3 covers this
+> work (§11).
 
 VideoMap plays hundreds of videos at the same time on a flat, cylindrical or
 spherical surface. It arranges them into tiles automatically, lets the viewer
@@ -16,15 +22,19 @@ drop that folder into any directory of any web host.
 |---|---|---|
 | G1 | Hundreds of videos visibly playing at once | The videos are pre-composited into **mosaic tiles** (the map-pyramid idea), so the browser decodes a few tile videos, not hundreds of files |
 | G2 | Flat, cylindrical, spherical surfaces | One quadtree tile renderer that maps tile (u,v) space onto a pluggable surface function |
-| G3 | Auto-organize into tiles | Layout engine groups and sorts by category and tags, then packs cells onto a grid aligned with the tiles |
+| G3 | Auto-organize into tiles | Layout engine groups and sorts by category and tags, then packs the videos with a selectable strategy: a uniform grid aligned with the tiles, or masonry columns (§5.1) |
 | G4 | Smooth on low-end phones | A hard cap on how many videos decode at once, an adaptive level of detail, H.264 Main profile, a still-image pyramid as fallback, and a small custom WebGL renderer |
 | G5 | Click → floating, maximizable player with the higher-resolution file | A windowed player that plays a per-video "full" rendition and stays visibly linked to the video's cell on the wall |
-| G6 | Configurable preview length; shorter videos loop | `preview.duration` sets one shared loop length; short clips are looped up to it when the tiles are built |
+| G6 | Configurable preview length; shorter videos loop | `preview.duration` sets one shared loop length; short clips are looped up to it when the tiles are built. *(As built: `preview.duration` / `--preview-duration`, default 10 s, up to 300 s. Tile size grows linearly with it.)* |
 | G7 | Selectable output resolution | `--canvas WxH` (or `--cell WxH`) plus `--tile WxH` set the full-resolution pixel size of the pyramid |
 | G8 | Hostable from any folder | All output paths are relative, there are no server-side requirements, and one `index.html` is the entry point |
 | G9 | CLI from a JSON manifest | `vmap build scene.json --out dist/` |
 | G10 | Professional front end, with uploads, JSON editing and sample scenes later | A "Studio" app on a Node backend that calls the same build pipeline |
 | G11 | JavaScript / Node | Node ≥ 22 (ESM), plain JS with JSDoc types and `checkJs`, Vite for front-end bundling |
+| G12 | Show each video's whole frame, never cropped | `layout.fit: "contain"` becomes the default and letterboxes inside grid cells. Masonry packing gives each video a cell with its own aspect ratio, so it needs neither cropping nor borders |
+| G13 | Control the packing order and strategy | `layout.pack`: `"grid"` (as built, and still the default) or `"masonry"` (opt-in: fixed-width columns, each video goes to the shortest column, groups side by side as column groups or stacked as bands). Later: `"rows"`, `"random"`, `"rotated"`, `"stack"` (§5.1) |
+| G14 | Fast builds with hardware encoding | `build.hardware: "auto"` (the default) finds a working NVENC, Quick Sync, AMF, VideoToolbox or VAAPI encoder and falls back to libx264. It can be changed from the CLI and the Studio (§5.2) |
+| G15 | Tiles-only output to save disk space | `output.full.enabled: false` (`--no-full`) skips full renditions. The floating window then shows the poster and metadata (§5.3) |
 
 ---
 
@@ -84,10 +94,12 @@ Level N   2^N × 2^N tiles      – full "canvas" resolution chosen by the user
  scene.json ──▶ │ validate ─▶ probe (ffprobe) ─▶ layout ─▶ normalize clips ─▶ tiles │ ──▶ dist/
  (+ files)      │                                         (loop/trim/scale)   pyramid│      index.html
                 │                     └─▶ full renditions ─▶ posters ─▶ manifest   │      viewer.[hash].js
-                └───────────────────────────────────────────────────────────────────┘      scene.json
-                      ▲                                                                    tiles/{z}/{x}/{y}.mp4
-                      │ same pipeline (job queue)                                          stills/{z}/{x}/{y}.webp
-                ┌─────┴──────┐                                                             media/{id}.mp4
+                │                         (optional)                                │      scene.json
+                │        encoder: hardware (NVENC/QSV/AMF/VT/VAAPI) or libx264      │      tiles/{z}/{x}/{y}.mp4
+                └───────────────────────────────────────────────────────────────────┘      stills/{z}/{x}/{y}.webp
+                      ▲                                                                    media/{id}.mp4 (optional)
+                      │ same pipeline (job queue)
+                ┌─────┴──────┐
                 │  Studio    │  upload, edit metadata, preview, build, download zip        posters/{id}.webp
                 │ (web + API)│
                 └────────────┘
@@ -133,19 +145,28 @@ so the Studio and CLI share it, and editors get autocomplete.
     "loopShort": true              // loop clips shorter than duration (default)
   },
   "layout": {
-    "cellAspect": "16:9",
-    "fit": "cover",                // "cover" (crop) | "contain" (letterbox)
+    "pack": "grid",                // "grid" | "masonry" (later: "rows" | "random" | "rotated" | "stack"), §5.1
+    "cellAspect": "16:9",          // grid only
+    "fit": "contain",              // grid only: "contain" (letterbox, default) | "cover" (crop to fill)
+    "columnWidth": 384,            // masonry only: column width in px at full zoom (or derived from canvas)
+    "gap": 0,                      // masonry only: gutter between videos in px at full zoom
     "groupBy": "category",         // "category" | "tag:<name>" | "none"
-    "sortBy": ["category", "title"],
-    "groupGap": 1,                 // empty cells between groups
+    "sortBy": ["category", "title"],  // also sets the order videos are dealt to columns in masonry
+    "groupArrange": "columns",     // masonry only: "columns" (side-by-side column groups, default) | "bands"
+    "groupGap": 1,                 // empty cells (grid) or whole columns (masonry, default 0) between groups
     "labels": true                 // draw group labels on the wall
   },
   "output": {
     "canvas": "7680x4320",         // full-res pyramid size in px (or use "cell")
     "cell": null,                  // e.g. "384x216" – alternative to canvas
     "tile": "768x432",             // tile video size in px
-    "full": { "maxHeight": 1080, "codec": "h264" },   // windowed-player rendition
+    "full": { "enabled": true, "maxHeight": 1080, "codec": "h264" },   // false = tiles only (§5.3)
     "stills": true                 // also emit a still-image pyramid (fallback + instant first paint)
+  },
+  "build": {                       // how to build, not what: CLI flags and Studio settings override it
+    "hardware": "auto",            // "auto" | "off" | "nvenc" | "qsv" | "amf" | "videotoolbox" | "vaapi", §5.2
+    "hardwareFinal": false,        // also use hardware for the final tiles (default false = x264 for those only)
+    "hardwareJobs": 3              // concurrent hardware encode sessions
   },
   "categories": [
     { "id": "ocean", "label": "Ocean", "color": "#2b7bb9" }
@@ -159,6 +180,7 @@ so the Studio and CLI share it, and editors get autocomplete.
       "categories": ["ocean"],
       "tags": ["underwater", "4k", "fish"],
       "previewStart": 12.5,                    // optional
+      "fit": "cover",                          // optional per-video override of layout.fit (grid only)
       "poster": "posters/reef.jpg",            // optional; otherwise extracted
       "credits": { "author": "…", "license": "CC-BY-4.0", "url": "…" },
       "links": [{ "label": "Source", "href": "…" }],
@@ -178,7 +200,8 @@ back to defaults tuned for phones.
 1. **Validate** the manifest with the schema. Give friendly errors with JSON paths.
 2. **Probe** each source with `ffprobe` for duration, dimensions, rotation, fps,
    audio and codec. Fail fast on unreadable files.
-3. **Layout** (pure, in `core`):
+3. **Layout** (pure, in `core`). Steps 3–6 below describe `pack: "grid"`.
+   §5.1 covers masonry and how it changes the tile invariant.
    * Group, then sort, then shelf-pack each group as a rectangular block, with
      gaps between groups. Several shelf widths and block heights are tried, and
      the most compact packing nearest the target aspect wins.
@@ -201,6 +224,9 @@ back to defaults tuned for phones.
    scaling to the cell size at the deepest level, and a constant frame count of
    `duration × fps`. All clips come out frame-exact and the same length, so
    every tile loops seamlessly and in sync.
+   *(Revision 2: `contain` becomes the default and can be overridden per
+   video. In masonry each clip is scaled to its own rectangle, so it is never
+   cropped or padded beyond rounding to even pixels.)*
 5. **Deepest tile level:** each tile is an `xstack` of the normalized clips that
    fall inside it (for example 2×2 to 4×4 cells). Empty slots use a color source.
 6. **Lower levels, built bottom-up:** each parent tile = the 2×2 child tiles,
@@ -220,11 +246,16 @@ back to defaults tuned for phones.
    from the same composite, and the viewer plays the first codec the browser
    supports. VP9 also lets the browser tests exercise real video playback in
    Playwright's Chromium, which has no H.264.)*
+   *(Revision 2: H.264 encodes go to a hardware encoder when one works. VP9
+   stays on libvpx. See §5.2.)*
 8. **Stills pyramid:** the first frame of each tile → WebP. These give instant
    first paint, a fallback while a video tile loads, and the image for
    reduced-motion and Low Power modes.
 9. **Full renditions:** each source → H.264 MP4 (≤ `full.maxHeight`) with AAC
    audio and faststart, plus a poster image. Optional HLS output for long sources.
+   *(As built: sources that are already web-compatible are remuxed, not
+   re-encoded. Revision 2: full renditions can be turned off and posters are
+   still made. See §5.3.)*
 10. **Emit** the output `scene.json` (runtime manifest), copy the prebuilt viewer
     bundle and `index.html`, and write a build report: sizes, timing, and
     warnings such as "video X upscaled 3×".
@@ -244,6 +275,197 @@ what's missing instead.)*
 at 24 fps → levels of 10×10, 5×5, 3×3, 2×2 and 1×1 tiles = **139 tile videos at ~0.5–1 MB each ≈ 70–140 MB**, plus
 the full renditions. The build report prints this estimate *before* encoding.
 
+### 5.1 Packing strategies (`layout.pack`) — revision 2
+
+The grid makes every video the same shape, so a portrait clip on a 16:9 wall
+is either cropped hard (`cover`) or shrunk inside wide black bars
+(`contain`). Packing strategies let each video keep its own shape.
+
+**The layout model becomes rectangles.** Each strategy outputs one rectangle
+per video, `{ x, y, w, h }`, in full-resolution wall pixels. The runtime
+manifest stores it as `videos[].rect`. The grid outputs rectangles too
+(cell position × cell size) and keeps `cell` for the grid-only fast paths. The
+builder, picking, highlight, leader line, Locate, group labels and filtering
+all work from `rect`, so every strategy uses the same code. The model leaves
+room for an optional `rotation` and `z` later.
+
+| `pack` | Shape of each video | Order | Status |
+|---|---|---|---|
+| `grid` | Uniform cells (`cellAspect`), `fit: contain` or `cover` | Row-major within shelf-packed group blocks | Built (`contain` becomes the default) |
+| `masonry` | Fixed column width, height from the video's own aspect | Each video, in sort order, goes to the **shortest column** (ties go to the leftmost) | Milestone 3, opt-in (`grid` stays the default) |
+| `rows` | Fixed row height, width from the aspect (justified rows) | Left to right, wrapping when a row is full | Later |
+| `random`, `rotated`, `stack` | Free placement, optional rotation and overlap (photo-stack look) | Seeded, so builds can be reproduced | Later. Needs rotated compositing (`rotate` + alpha `overlay`) and z-ordered, rotated picking |
+
+**Masonry in detail:**
+
+* **Column width** `W` comes from `layout.columnWidth` (default 384 px), or is
+  derived from `output.canvas`. Each video's height is
+  `h = even(W / displayAspect)`, using the aspect after rotation and
+  sample-aspect correction. That is the whole frame with no borders. Extreme
+  shapes are clamped to between `W/3` and `2W` tall, and only clips beyond
+  that range get borders inside the clamp. A 9:16 phone clip at `W = 384`
+  is 682 px tall (heights are rounded to even pixels).
+* **Column count:** like the grid's packer, the layout tries a range of column
+  counts around `√(Σ area × aspect) / W`. The winner best matches
+  `layout.aspect` with the least empty space under the shorter columns.
+  *(As built: the search estimates each candidate with `avoidSplits`
+  applied. With 1024 px tiles, avoiding splits adds about 15% height, and
+  ignoring it skewed the chosen shape. With a canvas and no `columnWidth`,
+  the column width is fitted to both canvas dimensions, not just the width.)*
+* **Groups:** `layout.groupArrange` picks how groups are arranged.
+  * `"columns"` (the default) places groups **side by side as column
+    groups**. Each group gets a run of whole columns, sized in proportion to
+    its total video area, so neighbouring groups end at about the same
+    height. Each group gets at least one column. A label strip sits above each
+    group. When there are too many groups for one row, they wrap onto shelves,
+    the same way the grid's shelf packer wraps its blocks. The space between
+    groups is `groupGap` whole columns (default 0 for masonry), which keeps
+    column edges on tile edges. The viewer draws a thin divider between
+    adjacent groups.
+    *(As built: after each group's first column, every spare column goes to
+    whichever group is currently tallest. That levels the groups better than
+    rounding a proportional share. For shelves, a range of target heights is
+    tried, and each group gets enough columns to stay under the target.)*
+  * `"bands"` stacks groups as horizontal **bands** across the full width.
+    Before a group starts, every column is levelled to the tallest one, the
+    leftover space is filled with background, and a label band is reserved.
+* **Gutter:** `layout.gap` px between videos. It is drawn as background.
+
+**Effect on the tile invariant (§5 step 3).** The grid guarantees that no cell
+crosses a tile edge. Masonry keeps that guarantee horizontally only:
+
+* Tile width is a whole number of columns, `k × (W + gap)`, so column edges
+  fall on tile edges at every level.
+* Tile height is independent, so **videos can cross horizontal tile edges.**
+  A tall clip may be taller than a whole tile.
+* **Builder:** a deepest-level tile composites every clip whose `rect`
+  intersects it. Each input is first cropped to the part inside the tile
+  (`crop`), then placed with `xstack` as today. A normalized clip is cached
+  once and reused by every tile it touches. Parent levels don't change,
+  because they only depend on tile geometry. *(As built: videos that share a
+  source and size also share one clip. Before, two such videos could encode
+  the same cache file at once and fail.)*
+* **Visible tears:** if two tiles that share a video drift apart by even a
+  frame, the video shows a seam. Mitigations:
+  1. The scheduler treats tiles that share a video as one sync group, with a
+     tighter drift threshold.
+  2. `layout.avoidSplits: true` (the default for masonry) moves a clip that
+     fits inside one tile down to the next tile edge rather than letting it
+     cross one. Edges at coarser levels are multiples of the deepest ones, so
+     this holds at every level. The cost is some empty space per column.
+  3. The default tile height for masonry is taller (for example 1024 px), so
+     most clips fit inside one tile.
+* **Viewer:** picking maps the wall point to its column, then binary-searches
+  that column's videos by `y`. Rendering is unchanged, because tiles are still
+  tiles. *(As built: picking uses one coarse bucket index over the video
+  rectangles for every packing, so the grid and masonry share a code path, and
+  future free-placement packers will too.)*
+
+Masonry wraps on a cylinder the same way the grid does, since columns tile
+horizontally.
+
+### 5.2 Hardware encoding — revision 2
+
+On by default (`build.hardware: "auto"`). It can be changed with `--hw` or
+from the Studio's build settings.
+
+* **Detection:** read `ffmpeg -encoders`, then run a 0.2 s **test encode**
+  with each candidate, in the order NVENC → Quick Sync → AMF → VideoToolbox →
+  VAAPI. A listed encoder may still have no device or driver behind it. On the
+  development machine, the ffmpeg build lists NVENC, QSV and AMF, but only
+  NVENC works. The result is cached per ffmpeg binary and version, and
+  `vmap doctor` prints it. *(As built: each candidate encodes 12 frames
+  with both its master and its final-tile settings, and ffprobe checks the
+  final-tile output for Main profile and no B-frames. Results are cached for
+  7 days in the user cache folder (`VMAP_HW_CACHE` overrides it);
+  `vmap doctor` always re-tests and shows ffmpeg's specific reason, for
+  example "DLL amfrt64.dll failed to open". Detection takes about 1.3 s
+  uncached.)*
+* **What uses it:** every H.264 encode. That covers the normalized clips, the
+  tile masters, the final tiles and transcoded full renditions. VP9 tiles stay
+  on libvpx. WebP stills and posters don't change.
+* **Final tiles:** `build.hardwareFinal` (default `false` since milestone 3;
+  it was `true`) decides whether the final tiles also go to the hardware
+  encoder. With `false` (the default; `--hw-final` or the Studio switch turns
+  it on), only the final tiles are encoded with x264. Those are the
+  bytes viewers download, and hardware still handles the intermediates and
+  full renditions, which take most of the build time.
+* **Settings mapping:** each encoder gets a table of equivalent settings. The
+  high-quality intermediates use the encoder's constant-quality mode (for
+  example NVENC `-rc vbr -cq 18 -b:v 0`). The final tiles keep the browser
+  contract from §5 step 7: Main profile and level, a keyframe every second,
+  the bitrate cap and faststart. They use the closest equivalent of
+  `-tune fastdecode` where one exists (no B-frames, CAVLC where supported). A
+  test checks the output with ffprobe. *(As built: intermediates use
+  quality 16 (NVENC `-cq 16`, matching x264 CRF 14 masters more closely than
+  18). **B-frames stay on**: x264's `-tune fastdecode` keeps them too
+  (it only drops CABAC and deblocking), and without them NVENC needed about
+  twice the bytes for lower SSIM. NVENC final tiles use `p7`, spatial AQ, a
+  20-frame lookahead, CAVLC and `-cq` = tile CRF + 4; full renditions use
+  `-cq` = CRF + 5. Those offsets come from SSIM comparisons with x264 at the
+  same CRF. Encoders without a constant-quality mode with a cap (Quick Sync,
+  AMF, VideoToolbox, VA-API) use VBR at 70% of the cap. Only NVENC could be
+  tested here; the others are guarded by the test encode and the fallback.
+  The settings tables are data (`HW_ENCODERS` in `encode.js`), so the
+  fallback test registers a deliberately broken encoder.)*
+* **Decoding:** `-hwaccel auto` for the sources. Decoding 4K and HEVC sources
+  is often the slow part of normalization. Software decode is the fallback.
+  Filters (scale, pad, xstack) stay on the CPU at first. GPU filters
+  (`scale_cuda` etc.) are a later optimization. *(As built: only for HEVC,
+  AV1 and VP9 sources and sources above 1440p. For 48 1080p H.264 sources,
+  GPU decoding made clip normalization 13% slower, because frames are copied
+  back for the CPU filters. Clips smaller than 1280×720 also stay on libx264:
+  NVENC didn't make them faster, since decoding dominates, and their sessions
+  then held up tiles and full renditions.)*
+* **Concurrency:** a separate pool for hardware sessions
+  (`build.hardwareJobs`, default 3). Consumer GPUs limit how many encode
+  sessions can run at once. The CPU pool (`--jobs`) is unchanged.
+  *(As built: a hardware job holds its sessions and a CPU slot. A tile run
+  that writes both a master and a final tile on the GPU counts as two
+  sessions.)*
+* **Failure handling:** a hardware job that fails is retried with libx264 and
+  a warning is logged. After 3 failures in a row, hardware is turned off for
+  the rest of the build.
+* **Cache:** the encoder name is part of the cache key, so switching between
+  hardware and software re-encodes the affected outputs.
+* **Trade-off:** hardware H.264 usually needs somewhat more bits than x264 for
+  the same quality. The build report shows the encoder, the time per phase and
+  the output size, so the two can be compared on a real wall. If the tiles come
+  out too large, use `hardwareFinal: false`. *(As built, measured on 48 1080p
+  sources with NVENC: libx264 155 s, 10.0 MB of tiles and 244 MB of media;
+  NVENC 108 s, 14.5 MB and 284 MB; NVENC with x264 final tiles 99 s, 9.9 MB
+  and 284 MB. With x264 finals the build is fastest and the tiles are
+  smallest: those tile runs need one GPU session instead of two, so more of
+  them run at once. So `hardwareFinal` now defaults to `false`.)*
+
+### 5.3 Tiles-only output and disk use — revision 2
+
+Full renditions dominate the size of the output. In a 61-video test wall,
+tiles, stills and posters took about **22 MB** and `media/` took **7.9 GB**.
+
+* `output.full.enabled: false` (`--no-full`) already skips full renditions.
+  Posters are always made. The manifest sets `media: null`. Leftover `media/`
+  files from an earlier build are pruned like any other stale output.
+* **Viewer:** with no `media`, the floating window becomes an **info card**.
+  It shows a large poster and the full metadata, with no transport controls.
+  Before milestone 3 it showed an empty player with a "No full-resolution
+  version" message. The card keeps the highlight, leader line and Locate.
+  *(As built: the details panel is open on the card, and it has no details
+  toggle.)*
+  *Later option:* play the cell's crop of the deepest tile that is already
+  loaded in the window. That gives a moving preview at cell resolution with no
+  extra bytes.
+* **Build cache:** `.vmap-cache` holds high-quality intermediate clips and
+  tile masters, and can be bigger than the output (172 MB against 112 MB in
+  one test). `vmap clean` deletes it. `--no-keep-cache` deletes the
+  intermediates after a successful build, so the next build starts from
+  scratch. *(As built: `vmap clean` refuses folders that hold anything but
+  cache files. `--no-keep-cache` keeps the small probe and output records,
+  so full renditions and posters are still reused. The build report shows
+  the cache size.)*
+* The dry run and the Studio's size estimate show the bytes with and without
+  full renditions.
+
 ---
 
 ## 6. CLI (`packages/cli`, binary `vmap`)
@@ -256,10 +478,16 @@ vmap build scene.json -o dist/  # full pipeline
     --tile 768x432
     --surface plane|cylinder|sphere
     --preview-duration 10  --fps 24
-    --full-max-height 1080
-    --group-by category    --jobs 8   --no-stills   --dry-run (print plan + size estimate)
+    --full-max-height 1080 | --no-full (tiles only)
+    --pack grid|masonry    --fit contain|cover    --column-width 384   --gap 0
+    --group-arrange columns|bands
+    --hw auto|off|nvenc|qsv|amf|videotoolbox|vaapi   --hw-jobs 3   --hw-final
+    --group-by category    --jobs 8   --no-stills   --no-keep-cache
+    --dry-run (print plan + size estimate)
 vmap preview dist/              # tiny static server (range requests) + opens browser
 vmap info dist/                 # summarize an existing output
+vmap doctor                     # ffmpeg features, plus working hardware encoders (rev. 2)
+vmap clean [scene.json]         # delete the build cache (rev. 2)
 ```
 
 Exit codes and a `--json` output mode let CI pipelines and the Studio drive the CLI.
@@ -276,8 +504,8 @@ dist/
 ├─ scene.json          # runtime manifest: levels, tile templates, cells → video metadata
 ├─ tiles/{z}/{x}/{y}.mp4
 ├─ stills/{z}/{x}/{y}.webp
-├─ media/{id}.mp4      # full renditions
-└─ posters/{id}.webp
+├─ media/{id}.mp4      # full renditions (absent when built tiles-only, §5.3)
+└─ posters/{id}.webp   # always present
 ```
 
 * All URLs are **relative**, so the folder works at `/`, `/foo/bar/` or on a CDN.
@@ -316,7 +544,9 @@ dist/
   when they're ready and the parent isn't, which covers zooming out. A spare
   decoder plays the level-0 overview as the base layer.)*
 * Picking: ray → surface → (u,v) → cell index. This is analytic, with no GPU
-  readback.
+  readback. *(Revision 2: (u,v) → wall point → video `rect`. The grid uses
+  index math and masonry uses a per-column binary search, §5.1. As built: one
+  bucket index over the rectangles serves every packing.)*
 
 ### 8.2 Tile scheduler (the performance core)
 
@@ -363,6 +593,9 @@ dist/
 * A search box and tag/category chips. Non-matching cells are **dimmed and
   desaturated in the shader** through a per-cell mask texture (1 texel per
   cell). It updates instantly and costs no decode.
+  *(Revision 2: a 1-texel-per-cell mask only works for the uniform grid.
+  Instead, the dimming is drawn as one quad per non-matching video `rect`,
+  which works for every packing strategy and is just as cheap.)*
 * "Fly to group" jumps the camera to a category region.
 * A **list view** (accessible alternative) shows every video with poster,
   metadata and search. Selecting one flies to it on the wall.
@@ -393,6 +626,8 @@ dist/
      (`previewStart + masterTime`), so continuity feels natural.
 * An info panel shows title, description, categories, tags, credits, links and
   free-form `meta`.
+* **Tiles-only scenes** (no `media`): the window opens as an info card with the
+  poster and metadata instead of a player (§5.3).
 
 ### 8.6 UI and polish
 
@@ -430,7 +665,14 @@ The authoring app. The viewer stays fully static; the Studio is for making scene
   * A JSON editor (CodeMirror) with schema validation, kept in two-way sync with
     the form UI.
   * Layout and output settings that show a live **size estimate and tile
-    count**.
+    count**. These include the packing strategy and the sort order. Layout is
+    pure JS from `core` and uses probed sizes, so the wall's layout redraws
+    instantly as you change them. They also include the preview loop length,
+    fit, and full renditions on or off (tiles only).
+  * Build settings: a **hardware encoding** switch, which defaults to on and
+    lists the encoders that work, a "use hardware for final tiles" switch
+    (also on by default) and the number of hardware sessions. These
+    are saved per machine, because they describe the computer, not the scene.
   * Build with a progress log, then preview it in the embedded viewer.
   * A **sample scenes gallery**: one click loads a sample manifest and fetches
     its openly licensed clips.
@@ -464,10 +706,12 @@ throttling, plus a manual device matrix (below) before each milestone.
 | **0. Feasibility spike** (first) — *built, awaiting device results* | A hard-coded page playing N 512/768 px H.264 tiles as WebGL textures on real low-end iOS and Android devices | **Validates the main risk** (decoder count and texture upload cost) and sets the tier numbers. Includes a test of seamless loop sync |
 | **1. Core + CLI MVP** — *built* | Schema, layout (plane), normalize and loop, tile pyramid, stills, full renditions, `vmap build/validate/preview`, cache | Unit tests on layout and pyramid math; integration tests on synthetic `testsrc` clips |
 | **2. Viewer MVP (plane)** — *built* | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
-| **3. Curved surfaces** | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | |
-| **4. Discovery** | Search, tag/category filtering mask, group labels, list view, minimap, optional pre-baked alternate layouts | |
-| **5. Studio** | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export | |
-| **6. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`) | |
+| **3. Layout and build revisions** (revision 2) — *built* | **3a.** `fit: "contain"` by default, plus a per-video `fit` override. **3b.** Tiles-only: info-card window, size estimate with and without media, `vmap clean`, `--no-keep-cache`. **3c.** Hardware encoding: detection by test encode, `auto` by default, per-encoder settings tables, a hardware session pool, libx264 fallback, `--hw`/`--hw-jobs`, `hardwareFinal` (default off after measuring, `--hw-final`), `vmap doctor` output. **3d.** Masonry: the rectangle layout model in `core` and the manifest (`videos[].rect`), the shortest-column packer as an opt-in (`grid` stays the default), both group arrangements (side-by-side column groups by default, and bands), tiles that are whole columns wide, cropped compositing for clips that cross tiles, `avoidSplits`, sync groups in the scheduler, and rectangle-based picking, highlight and labels | 3a–3c are small and independent, so they ship first. 3d changes the manifest, so it comes before curved surfaces and discovery, which build on the layout model. Tests: packer unit tests (order, column balance, aspect, `avoidSplits`); a build test with portrait, landscape and square sources that checks nothing is cropped; an encoder-fallback test with a fake failing encoder; a hardware vs libx264 timing and size comparison in the build report; a Playwright test that clicks a masonry video crossing a tile edge. *(As built: all of these exist. The no-cropping test samples each video's border pixels in the decoded tiles, including videos split across two tiles. The hardware test checks NVENC tiles with ffprobe (Main profile, a keyframe per second) and skips without a working encoder. Building masonry walls from repeated sources found two latent races, fixed here: videos sharing a source shared a clip file, and tiles with identical content shared a master file.)* |
+| **4. Curved surfaces** (next) | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | Works with both grid and masonry |
+| **5. Discovery** | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | |
+| **6. Studio** | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | |
+| **7. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`) | |
+| **Later** | More packing strategies: `rows` (justified), `random`, `rotated`, `stack` (photo stack). GPU filter chain for faster builds. A live tile crop in the tiles-only info card | The rectangle model from 3d is designed so these are new packers plus rotated compositing, not a new pipeline |
 
 **Test device matrix:** an iPhone SE (2nd gen) on iOS 16 and the latest iOS, a
 low-end Android (Helio G-series or Snapdragon 4xx, 3 GB RAM) on Chrome, a
@@ -487,6 +731,10 @@ mid-range Android, desktop Chrome, Firefox and Safari.
 | Source variety (rotation, odd sample aspect ratio, VFR, HDR) | Normalize everything when probing (rotation metadata, SAR, tone-map HDR to SDR, constant fps) |
 | ffmpeg availability | Use the system ffmpeg if present, otherwise `ffmpeg-static`. `vmap doctor` checks codecs |
 | Sample content licensing | Use only CC0 or CC-BY content (for example Blender open movies or public-domain archives), with a credits field shown in the UI |
+| Masonry videos that cross a tile edge show a seam when the two tiles drift | `avoidSplits` by default, taller default tiles, and sync groups with a tighter drift threshold in the scheduler (§5.1) |
+| A hardware encoder is listed but doesn't work, or fails partway through a build | A test encode at detection time, per-job fallback to libx264, and hardware turned off after repeated failures (§5.2) |
+| Hardware H.264 tiles are larger or fail the browser contract (profile, keyframes) | Per-encoder settings tables, an ffprobe check of the output, and size shown in the build report. Final tiles stay on x264 by default (`hardwareFinal: false`) |
+| Consumer GPU limits on concurrent encode sessions | A separate `hardwareJobs` pool (default 3) |
 
 ---
 
@@ -511,3 +759,15 @@ mid-range Android, desktop Chrome, Firefox and Safari.
    floating player?
 9. **TypeScript:** plain JS with JSDoc types is the plan (it matches the request
    for "JavaScript"). Would TypeScript be acceptable?
+
+**Decided in revision 2:**
+
+* `grid` stays the default packing. `masonry` is opt-in (`--pack masonry`).
+* Hardware is used for the final tiles by default (`build.hardwareFinal:
+  true`). `--no-hw-final` keeps them on x264. *(Changed after milestone 3's
+  measurements: the final tiles now stay on x264 by default
+  (`hardwareFinal: false`), which built faster and gave smaller tiles.
+  `--hw-final` opts in.)*
+* Masonry supports both group arrangements. Side-by-side column groups are the
+  default (`layout.groupArrange: "columns"`), and `"bands"` is the
+  alternative.

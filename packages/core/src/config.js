@@ -2,25 +2,47 @@
 
 import { parseRatio, parseSize } from './dims.js';
 
-/** Defaults tuned for low-end phones (plan §8.2 and §10). */
+/**
+ * Defaults tuned for low-end phones (plan §8.2 and §10). A few depend on
+ * layout.pack and are filled in by resolveConfig: output.tile, output.cell,
+ * layout.groupGap and layout.columnWidth.
+ */
 export const DEFAULTS = Object.freeze({
   surface: { type: 'plane', arc: 360, latitudeBand: [-60, 60], view: 'inside' },
   preview: { duration: 10, fps: 24, startStrategy: 'auto', loopShort: true },
-  layout: { cellAspect: '16:9', aspect: '16:9', fit: 'cover', groupBy: 'category', sortBy: ['title'], groupGap: 1, labels: true },
+  layout: {
+    pack: 'grid',
+    cellAspect: '16:9',
+    aspect: '16:9',
+    fit: 'contain',
+    gap: 0,
+    groupArrange: 'columns',
+    avoidSplits: true,
+    groupBy: 'category',
+    sortBy: ['title'],
+    labels: true,
+  },
   output: {
     canvas: null,
     cell: null,
-    tile: '768x432',
     tileCrf: 28,
     tileCodecs: ['h264'],
     background: '#101318',
     stills: true,
     full: { enabled: true, maxHeight: 1080, crf: 23 },
   },
+  // Final tiles stay on libx264: measured faster overall (each tile run then needs one GPU session, not two) and smaller.
+  build: { hardware: 'auto', hardwareFinal: false, hardwareJobs: 3 },
 });
 
-/** Default cell size when neither output.canvas nor output.cell is set. */
+/** Default cell size (grid) when neither output.canvas nor output.cell is set. */
 export const DEFAULT_CELL = '384x216';
+/** Default column width (masonry) when output.canvas isn't set. */
+export const DEFAULT_COLUMN_WIDTH = 384;
+/** Default tile size per packing. Masonry tiles are taller so most videos fit in one tile (plan §5.1). */
+export const DEFAULT_TILE = Object.freeze({ grid: '768x432', masonry: '768x1024' });
+
+/** @typedef {'auto'|'off'|'nvenc'|'qsv'|'amf'|'videotoolbox'|'vaapi'} HardwareSetting */
 
 /**
  * @typedef {object} ResolvedConfig
@@ -28,9 +50,12 @@ export const DEFAULT_CELL = '384x216';
  * @property {string} description
  * @property {{ type: 'plane'|'cylinder'|'sphere', arc: number, latitudeBand: number[], view: 'inside'|'outside' }} surface
  * @property {{ duration: number, fps: number, frames: number, startStrategy: 'auto'|'start', loopShort: boolean }} preview
- * @property {{ cellAspect: number, aspect: number, fit: 'cover'|'contain', groupBy: string, sortBy: string[], groupGap: number, labels: boolean }} layout
+ * @property {{ pack: 'grid'|'masonry', cellAspect: number, aspect: number, fit: 'cover'|'contain', columnWidth: number|null, gap: number,
+ *   groupArrange: 'columns'|'bands', avoidSplits: boolean, groupBy: string, sortBy: string[], groupGap: number, labels: boolean }} layout
+ *   columnWidth is null when it is derived from output.canvas
  * @property {{ canvas: import('./dims.js').Size|null, cell: import('./dims.js').Size|null, tile: import('./dims.js').Size,
  *   tileCrf: number, tileCodecs: Array<'h264'|'vp9'>, background: string, stills: boolean, full: { enabled: boolean, maxHeight: number, crf: number } }} output
+ * @property {{ hardware: HardwareSetting, hardwareFinal: boolean, hardwareJobs: number }} build
  */
 
 /**
@@ -45,6 +70,8 @@ export function resolveConfig(scene, overrides = {}) {
   const preview = pick('preview');
   const layout = pick('layout');
   const output = pick('output');
+  const build = pick('build');
+  const masonry = layout.pack === 'masonry';
 
   if (output.canvas && output.cell) {
     // A CLI override of one wins over the scene's other.
@@ -52,7 +79,10 @@ export function resolveConfig(scene, overrides = {}) {
     else if (overrides?.output?.canvas && !overrides?.output?.cell) output.cell = null;
     else throw new Error('output.canvas and output.cell are alternatives; set only one');
   }
-  if (!output.canvas && !output.cell) output.cell = DEFAULT_CELL;
+  if (!output.canvas && !output.cell && !masonry) output.cell = DEFAULT_CELL;
+  output.tile ??= DEFAULT_TILE[masonry ? 'masonry' : 'grid'];
+  layout.groupGap ??= masonry ? 0 : 1;
+  layout.columnWidth ??= output.canvas ? null : DEFAULT_COLUMN_WIDTH;
 
   const fps = preview.fps;
   const duration = preview.duration;
@@ -75,6 +105,7 @@ export function resolveConfig(scene, overrides = {}) {
       cell: output.cell ? parseSize(output.cell, 'output.cell') : null,
       tile: parseSize(output.tile, 'output.tile'),
     },
+    build,
   };
 }
 
