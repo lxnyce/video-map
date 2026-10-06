@@ -1,0 +1,48 @@
+{
+  "$schema": "../../packages/core/schema/scene.schema.json",
+  "title": "Nature Wall",
+  "description": "Every field the scene format supports, with typical values.",
+  "surface": { "type": "plane" },
+  "preview": { "duration": 10, "fps": 24, "startStrategy": "auto", "loopShort": true },
+  "layout": {
+    "cellAspect": "16:9",
+    "fit": "cover",
+    "groupBy": "category",
+    "sortBy": ["title"],
+    "groupGap": 1,
+    "labels": true
+  },
+  "output": {
+    "canvas": "7680x4320",
+    "tile": "768x432",
+    "tileCrf": 28,
+    "background": "#101318",
+    "stills": true,
+    "full": { "enabled": true, "maxHeight": 1080, "crf": 23 }
+  },
+  "categories": [
+    { "id": "ocean", "label": "Ocean", "color": "#2b7bb9" },
+    { "id": "forest", "label": "Forest", "color": "#3a9a5b" }
+  ],
+  "videos": [
+    {
+      "id": "reef-01",
+      "src": "media/reef-01.mov",
+      "title": "Coral Reef",
+      "description": "A school of fish over a shallow reef.",
+      "categories": ["ocean"],
+      "tags": ["underwater", "fish", "place:Great Barrier Reef"],
+      "previewStart": 12.5,
+      "credits": { "author": "Jane Doe", "license": "CC-BY-4.0", "url": "https://example.com/reef" },
+      "links": [{ "label": "Source", "href": "https://example.com/reef" }],
+      "meta": { "year": 2024, "camera": "A7S III" }
+    },
+    {
+      "id": "canopy",
+      "src": "media/canopy.mp4",
+      "title": "Rainforest Canopy",
+      "categories": ["forest"],
+      "poster": "posters/canopy.jpg"
+    }
+  ]
+}

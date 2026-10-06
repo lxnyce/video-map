@@ -1,0 +1,14 @@
+{
+  "name": "@videomap/cli",
+  "version": "0.1.0",
+  "description": "vmap: build, validate and preview VideoMap scenes from the command line.",
+  "type": "module",
+  "bin": {
+    "vmap": "./src/cli.js"
+  },
+  "files": ["src"],
+  "dependencies": {
+    "@videomap/builder": "0.1.0",
+    "@videomap/core": "0.1.0"
+  }
+}

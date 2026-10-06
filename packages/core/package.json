@@ -1,0 +1,15 @@
+{
+  "name": "@videomap/core",
+  "version": "0.1.0",
+  "description": "Scene schema, layout and tile pyramid math shared by the VideoMap CLI, builder and viewer.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./validate": "./src/validate.js",
+    "./scene.schema.json": "./schema/scene.schema.json"
+  },
+  "files": ["src", "schema"],
+  "dependencies": {
+    "ajv": "^8.17.1"
+  }
+}

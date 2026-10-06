@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>VideoMap</title>
+  <!--
+    Interim debug viewer (milestone 1). It shows one pyramid level at a time as
+    plain <video> tiles so builds can be checked by eye. The WebGL viewer
+    replaces it in milestone 2.
+  -->
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --panel: #12151d;
+      --line: #2a2f3b;
+      --text: #e8eaf0;
+      --muted: #8b93a7;
+      --accent: #5b9dff;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); }
+    header {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+      padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+    }
+    h1 { font-size: 16px; margin: 0; }
+    .meta { color: var(--muted); font-size: 13px; }
+    label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    #wall { position: relative; margin: 16px; width: max-content; }
+    .tile { position: absolute; display: block; background: var(--wall-bg); cursor: pointer; }
+    .tile video, .tile img { width: 100%; height: 100%; display: block; }
+    .label {
+      position: absolute; pointer-events: none; font-size: 12px; font-weight: 600;
+      padding: 2px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.65); white-space: nowrap;
+      transform: translateY(-100%);
+    }
+    .hit { position: absolute; outline: 2px solid var(--accent); pointer-events: none; display: none; }
+    dialog {
+      width: min(960px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line);
+      border-radius: 12px; background: var(--panel); color: var(--text);
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+    dialog video { width: 100%; display: block; background: #000; max-height: 70vh; }
+    .info { padding: 12px 16px 16px; }
+    .info h2 { margin: 0 0 6px; font-size: 18px; }
+    .info p { margin: 6px 0; color: var(--muted); font-size: 14px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip { font-size: 12px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
+    button { font: inherit; color: var(--text); background: #1b1f2a; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+    .error { color: #ff6b6b; padding: 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">VideoMap</h1>
+    <span class="meta" id="stats"></span>
+    <label>Level <input id="level" type="range" min="0" max="0" value="0"> <output id="level-out">0</output></label>
+  </header>
+  <div id="wall"></div>
+  <dialog id="player">
+    <video id="player-video" controls playsinline></video>
+    <div class="info">
+      <h2 id="player-title"></h2>
+      <p id="player-desc"></p>
+      <div class="chips" id="player-chips"></div>
+      <p><button id="player-close" type="button">Close</button></p>
+    </div>
+  </dialog>
+  <script type="module">
+    const $ = (id) => document.getElementById(id);
+    const MAX_PLAYING = 12;
+    let scene;
+    let observer;
+    const playing = new Set();
+
+    try {
+      const res = await fetch('scene.json');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      scene = await res.json();
+    } catch (err) {
+      document.body.innerHTML = `<p class="error">Couldn't load scene.json (${err.message}). Serve this folder over HTTP, e.g. with "vmap preview".</p>`;
+      throw err;
+    }
+
+    document.title = scene.title;
+    $('title').textContent = scene.title;
+    document.documentElement.style.setProperty('--wall-bg', scene.background);
+    const p = scene.pyramid;
+    $('stats').textContent = `${scene.videos.length} videos · ${scene.grid.cols}×${scene.grid.rows} cells of ${scene.grid.cell.w}×${scene.grid.cell.h} · ${p.maxZoom + 1} levels · ${scene.preview.duration}s loop @ ${scene.preview.fps} fps`;
+    $('level').max = String(p.maxZoom);
+    const byCell = new Map(scene.videos.filter((v) => v.cell).map((v) => [`${v.cell.col},${v.cell.row}`, v]));
+    const fill = (t, vars) => t.replace(/\{(\w+)\}/g, (_, k) => vars[k]);
+
+    function showLevel(z) {
+      const level = p.levels[z];
+      $('level').value = String(z);
+      $('level-out').textContent = `${z} · ${level.tiles.length} tile${level.tiles.length === 1 ? '' : 's'}`;
+      observer?.disconnect();
+      playing.clear();
+      const wall = $('wall');
+      wall.replaceChildren();
+      wall.style.width = `${level.tilesX * p.tile.w}px`;
+      wall.style.height = `${level.tilesY * p.tile.h}px`;
+
+      observer = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          const v = e.target.querySelector('video');
+          if (e.isIntersecting && playing.size < MAX_PLAYING) {
+            if (!v.src) v.src = v.dataset.src;
+            v.play().catch(() => {});
+            playing.add(v);
+          } else if (!e.isIntersecting) {
+            v.pause();
+            playing.delete(v);
+          }
+        }
+      }, { rootMargin: '100px' });
+
+      for (const [x, y] of level.tiles) {
+        const el = document.createElement('div');
+        el.className = 'tile';
+        Object.assign(el.style, { left: `${x * p.tile.w}px`, top: `${y * p.tile.h}px`, width: `${p.tile.w}px`, height: `${p.tile.h}px` });
+        const v = document.createElement('video');
+        Object.assign(v, { muted: true, loop: true, playsInline: true, preload: 'none' });
+        v.dataset.src = fill(p.video.template, { z, x, y });
+        if (p.still) v.poster = fill(p.still.template, { z, x, y });
+        el.append(v);
+        el.addEventListener('click', (ev) => openAt(z, x, y, ev));
+        wall.append(el);
+        observer.observe(el);
+      }
+
+      const hit = document.createElement('div');
+      hit.className = 'hit';
+      hit.id = 'hit';
+      wall.append(hit);
+
+      if (scene.labels) {
+        for (const g of scene.groups) {
+          const label = document.createElement('div');
+          label.className = 'label';
+          label.textContent = `${g.label} (${g.count})`;
+          if (g.color) label.style.borderLeft = `3px solid ${g.color}`;
+          Object.assign(label.style, { left: `${g.col * scene.grid.cell.w * level.scale}px`, top: `${g.row * scene.grid.cell.h * level.scale}px` });
+          wall.append(label);
+        }
+      }
+    }
+
+    // Map a click inside a tile back to its cell, the same math the WebGL viewer will use.
+    function openAt(z, x, y, ev) {
+      const level = p.levels[z];
+      const rect = ev.currentTarget.getBoundingClientRect();
+      const px = (x * p.tile.w + (ev.clientX - rect.left)) / level.scale;
+      const py = (y * p.tile.h + (ev.clientY - rect.top)) / level.scale;
+      const col = Math.floor(px / scene.grid.cell.w);
+      const row = Math.floor(py / scene.grid.cell.h);
+      const video = byCell.get(`${col},${row}`);
+      if (!video) return;
+      const hit = $('hit');
+      Object.assign(hit.style, {
+        display: 'block',
+        left: `${col * scene.grid.cell.w * level.scale}px`,
+        top: `${row * scene.grid.cell.h * level.scale}px`,
+        width: `${scene.grid.cell.w * level.scale}px`,
+        height: `${scene.grid.cell.h * level.scale}px`,
+      });
+      $('player-title').textContent = video.title;
+      $('player-desc').textContent = video.description ?? '';
+      $('player-chips').replaceChildren(...[...video.categories, ...video.tags].map((t) => {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        c.textContent = t;
+        return c;
+      }));
+      const pv = $('player-video');
+      pv.poster = video.poster ?? '';
+      pv.src = video.media ?? fill(p.video.template, { z, x, y });
+      pv.currentTime = video.media ? video.previewStart : 0;
+      $('player').showModal();
+      pv.play().catch(() => {});
+    }
+
+    $('player-close').addEventListener('click', () => $('player').close());
+    $('player').addEventListener('close', () => {
+      const pv = $('player-video');
+      pv.pause();
+      pv.removeAttribute('src');
+      pv.load();
+    });
+    $('level').addEventListener('input', (e) => showLevel(Number(e.target.value)));
+    showLevel(0);
+  </script>
+</body>
+</html>

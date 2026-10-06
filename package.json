@@ -1,14 +1,26 @@
 {
   "name": "video-map",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Play hundreds of videos at once on flat, cylindrical or spherical surfaces using a video tile pyramid.",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
+    "test": "node --test \"packages/*/test/*.test.js\"",
+    "typecheck": "tsc -p .",
+    "check": "npm run typecheck && npm test",
+    "schema": "node packages/core/scripts/write-schema.js",
+    "vmap": "node packages/cli/src/cli.js",
     "spike:generate": "node spike/generate.mjs",
     "spike:serve": "node spike/serve.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
   }
 }

@@ -24,7 +24,7 @@ drop that folder into any directory of any web host.
 | G8 | Hostable from any folder | All output paths are relative, there are no server-side requirements, and one `index.html` is the entry point |
 | G9 | CLI from a JSON manifest | `vmap build scene.json --out dist/` |
 | G10 | Professional front end, with uploads, JSON editing and sample scenes later | A "Studio" app on a Node backend that calls the same build pipeline |
-| G11 | JavaScript / Node | Node ≥ 20 (ESM), plain JS with JSDoc types and `checkJs`, Vite for front-end bundling |
+| G11 | JavaScript / Node | Node ≥ 22 (ESM), plain JS with JSDoc types and `checkJs`, Vite for front-end bundling |
 
 ---
 
@@ -179,8 +179,10 @@ back to defaults tuned for phones.
 2. **Probe** each source with `ffprobe` for duration, dimensions, rotation, fps,
    audio and codec. Fail fast on unreadable files.
 3. **Layout** (pure, in `core`):
-   * Group, then sort, then pack cells row by row into a grid with gaps between
-     groups. For a cylinder the grid wraps horizontally. For a sphere the grid
+   * Group, then sort, then shelf-pack each group as a rectangular block, with
+     gaps between groups. Several shelf widths and block heights are tried, and
+     the most compact packing nearest the target aspect wins.
+     *(As built: typical category mixes fill 80–88% of the grid.)* For a cylinder the grid wraps horizontally. For a sphere the grid
      is laid out on equirectangular (u,v) space inside the latitude band.
    * The **grid snaps to tile boundaries.** Tile dimensions are an integer
      multiple of the cell dimensions at the deepest level, and each level up
@@ -189,8 +191,10 @@ back to defaults tuned for phones.
    * Grid shape: choose `cols × rows` to match the canvas aspect (for example
      400 videos → 20×20 cells of 16:9 → a 16:9 canvas). Unused cells get a
      neutral backdrop or a group label.
-   * Levels halve Deep-Zoom style (`ceil(n/2)` tiles per axis, edge tiles may be
-     partial), so the canvas doesn't need padding to a power of two.
+   * Levels halve Deep-Zoom style (`ceil(n/2)` tiles per axis), so the canvas
+     doesn't need padding to a power of two. *(As built: edge tiles keep the
+     full tile size and are filled with the background color, so every tile
+     video has the same dimensions.)*
 4. **Normalize preview clips** (one ffmpeg job per video, run in parallel):
    seek to `previewStart`, then **loop clips shorter than `duration`**
    (`-stream_loop -1` + trim). Trim long ones. Then apply fps, `cover`/`contain`
@@ -202,7 +206,9 @@ back to defaults tuned for phones.
 6. **Lower levels, built bottom-up:** each parent tile = the 2×2 child tiles,
    stacked and scaled by 0.5. That costs the same per tile at every level and
    never needs a huge canvas in memory. It works the way `gdal2tiles` builds
-   overviews.
+   overviews. *(As built: each tile run also writes a high-quality master into
+   the cache, and parents are built from masters rather than from the final
+   CRF-28 tiles, so quality doesn't degrade level after level.)*
 7. **Encoding (tiles):** H.264 **Main** profile, `yuv420p`, no audio,
    `+faststart`, a keyframe at frame 0 and every 1 s, even pixel dimensions, CRF ~28 with a bitrate cap,
    and `-tune fastdecode`. Optional extra AV1/HEVC sources can come later
@@ -222,8 +228,10 @@ only metadata rebuilds only the manifest. Changing the layout re-encodes tiles
 from cached normalized clips without re-decoding the sources.
 
 **Concurrency:** a worker pool sized to the number of CPUs (`--jobs`), with a
-progress bar and ETA. ffmpeg comes from the system `PATH`, with `ffmpeg-static`
-as a fallback (or set it via `--ffmpeg`).
+progress bar and ETA. ffmpeg comes from the system `PATH` (or `--ffmpeg`).
+*(The `ffmpeg-static` fallback is deferred: its binaries are downloaded at
+install time, which fails behind restrictive networks. `vmap doctor` explains
+what's missing instead.)*
 
 **Size estimate (example):** 400 videos, 7680×4320 canvas, 768×432 tiles, 10 s
 at 24 fps → levels of 10×10, 5×5, 3×3, 2×2 and 1×1 tiles = **139 tile videos at ~0.5–1 MB each ≈ 70–140 MB**, plus
@@ -441,8 +449,8 @@ throttling, plus a manual device matrix (below) before each milestone.
 
 | Phase | Deliverable | Notes |
 |---|---|---|
-| **0. Feasibility spike** (first) | A hard-coded page playing N 512/768 px H.264 tiles as WebGL textures on real low-end iOS and Android devices | **Validates the main risk** (decoder count and texture upload cost) and sets the tier numbers. Includes a test of seamless loop sync |
-| **1. Core + CLI MVP** | Schema, layout (plane), normalize and loop, tile pyramid, stills, full renditions, `vmap build/validate/preview`, cache | Unit tests on layout and pyramid math; integration tests on synthetic `testsrc` clips |
+| **0. Feasibility spike** (first) — *built, awaiting device results* | A hard-coded page playing N 512/768 px H.264 tiles as WebGL textures on real low-end iOS and Android devices | **Validates the main risk** (decoder count and texture upload cost) and sets the tier numbers. Includes a test of seamless loop sync |
+| **1. Core + CLI MVP** — *built* | Schema, layout (plane), normalize and loop, tile pyramid, stills, full renditions, `vmap build/validate/preview`, cache | Unit tests on layout and pyramid math; integration tests on synthetic `testsrc` clips |
 | **2. Viewer MVP (plane)** | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
 | **3. Curved surfaces** | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | |
 | **4. Discovery** | Search, tag/category filtering mask, group labels, list view, minimap, optional pre-baked alternate layouts | |

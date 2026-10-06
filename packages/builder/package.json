@@ -1,0 +1,13 @@
+{
+  "name": "@videomap/builder",
+  "version": "0.1.0",
+  "description": "ffmpeg pipeline that turns a VideoMap scene into a static, hostable tile pyramid.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": ["src", "assets"],
+  "dependencies": {
+    "@videomap/core": "0.1.0"
+  }
+}
