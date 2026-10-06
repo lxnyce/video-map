@@ -1,6 +1,7 @@
 // Merges scene settings, CLI overrides and defaults into one resolved config.
 
 import { parseRatio, parseSize } from './dims.js';
+import { surfaceAspect } from './surface.js';
 
 /**
  * Defaults tuned for low-end phones (plan §8.2 and §10). A few depend on
@@ -83,6 +84,9 @@ export function resolveConfig(scene, overrides = {}) {
   output.tile ??= DEFAULT_TILE[masonry ? 'masonry' : 'grid'];
   layout.groupGap ??= masonry ? 0 : 1;
   layout.columnWidth ??= output.canvas ? null : DEFAULT_COLUMN_WIDTH;
+  // A curved surface shapes the wall to fill it (a 360° cylinder is about 4:1), unless the scene sets a shape.
+  const aspectSet = scene?.layout?.aspect !== undefined || overrides?.layout?.aspect !== undefined;
+  const aspect = aspectSet ? parseRatio(layout.aspect, 'layout.aspect') : surfaceAspect(surface) ?? parseRatio(layout.aspect, 'layout.aspect');
 
   const fps = preview.fps;
   const duration = preview.duration;
@@ -97,7 +101,7 @@ export function resolveConfig(scene, overrides = {}) {
     layout: {
       ...layout,
       cellAspect: parseRatio(layout.cellAspect, 'layout.cellAspect'),
-      aspect: parseRatio(layout.aspect, 'layout.aspect'),
+      aspect,
     },
     output: {
       ...output,

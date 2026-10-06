@@ -1,6 +1,7 @@
 // The viewer: ties the camera, level-of-detail selection, video pool, stills,
 // input, player windows and overlays together, and runs the render loop.
 
+import { surfaceGeometry } from '@videomap/core/surface';
 import { Camera } from './camera.js';
 import { detectTier, gpuName } from './device.js';
 import { formatHash, parseHash } from './hash.js';
@@ -11,6 +12,7 @@ import { createRectIndex, normalizeScene, sharedTiles } from './rects.js';
 import { Renderer, hexToRgb } from './renderer.js';
 import { VideoPool } from './scheduler.js';
 import { StillCache } from './stills.js';
+import { SurfaceCamera } from './surface-camera.js';
 
 const ACCENT = [0.36, 0.62, 1, 1];
 const ICONS = {
@@ -84,6 +86,8 @@ export class Viewer {
     this.catLabel = new Map((scene.categories ?? []).map((c) => [c.id, c.label ?? c.id]));
     this.bg = hexToRgb(scene.background ?? '#101318');
     this.outside = this.bg.map((c) => c * 0.55);
+    // Null for the flat wall; otherwise how the wall wraps a cylinder or sphere.
+    this.geo = surfaceGeometry(scene.surface, scene.content.width, scene.content.height);
 
     this.buildDom();
     this.renderer = new Renderer(this.canvas);
@@ -117,7 +121,7 @@ export class Viewer {
     this.userToggled = false;
     if (!this.videoSource && !this.stillSource) throw new Error('This browser cannot play the tile videos in this scene.');
 
-    this.camera = new Camera(scene.content.width, scene.content.height);
+    this.camera = this.geo ? new SurfaceCamera(this.geo) : new Camera(scene.content.width, scene.content.height);
     this.players = new Players(root, {
       cellRect: (v) => this.screenRect(v),
       locate: (v, rect) => this.locate(v, rect),
@@ -162,7 +166,9 @@ export class Viewer {
     this.canvas = el('canvas', 'vm-canvas');
     this.canvas.tabIndex = 0;
     this.canvas.setAttribute('role', 'application');
-    this.canvas.setAttribute('aria-label', `${s.title}: wall of ${s.videos.length} videos. Drag to pan, scroll or pinch to zoom, click a video to open it. Arrow keys pan, plus and minus zoom, 0 shows everything.`);
+    const shape = this.geo?.type ?? 'wall';
+    const drag = !this.geo ? 'Drag to pan' : this.geo.inside ? 'Drag to look around' : 'Drag to turn it';
+    this.canvas.setAttribute('aria-label', `${s.title}: ${shape} of ${s.videos.length} videos. ${drag}, scroll or pinch to zoom, click a video to open it. Arrow keys pan, plus and minus zoom, 0 shows everything.`);
     this.videoHost = el('div', 'vm-video-host');
     this.videoHost.setAttribute('aria-hidden', 'true');
     this.labelLayer = el('div', 'vm-labels');
@@ -336,20 +342,30 @@ export class Viewer {
   /** Video under a viewport point, or null. */
   pick(sx, sy) {
     const p = this.camera.screenToContent(sx, sy);
-    return this.index.at(p.x, p.y);
+    return p ? this.index.at(p.x, p.y) : null;
   }
 
-  /** A video's rectangle in viewport CSS pixels. */
+  /** A video's rectangle in viewport CSS pixels (on a curved surface, its bounding box). */
   screenRect(v) {
-    const r = v.rect;
+    return this.wallToScreen(v.rect);
+  }
+
+  /**
+   * A wall rectangle in viewport CSS pixels. On a curved surface it's the
+   * bounding box of the part in view; `visible` is false when none of it is.
+   * @param {{ x: number, y: number, w: number, h: number }} r
+   * @returns {{ x: number, y: number, w: number, h: number, visible?: boolean }}
+   */
+  wallToScreen(r) {
+    if (this.camera instanceof SurfaceCamera) return this.camera.rectToScreen(r);
     const p = this.camera.contentToScreen(r.x, r.y);
     return { x: p.x, y: p.y, w: r.w * this.camera.zoom, h: r.h * this.camera.zoom };
   }
 
-  tileScreenRect(z, x, y) {
+  /** A tile's area on the wall, in wall pixels. */
+  tileRect(z, x, y) {
     const s = this.levels[z].scale;
-    const p = this.camera.contentToScreen((x * this.tile.w) / s, (y * this.tile.h) / s);
-    return { x: p.x, y: p.y, w: (this.tile.w / s) * this.camera.zoom, h: (this.tile.h / s) * this.camera.zoom };
+    return { x: (x * this.tile.w) / s, y: (y * this.tile.h) / s, w: this.tile.w / s, h: this.tile.h / s };
   }
 
   open(v) {
@@ -435,10 +451,9 @@ export class Viewer {
     const vw = this.camera.vw;
     const vh = this.camera.vh;
     for (const { g, el: label } of this.labels) {
-      const p = this.camera.contentToScreen(g.x, g.y);
-      const w = g.w * this.camera.zoom;
-      const h = g.h * this.camera.zoom;
-      const visible = w >= 90 && p.x < vw && p.y < vh && p.x + w > 0 && p.y + h > 0;
+      const p = this.wallToScreen(g);
+      const { w, h } = p;
+      const visible = p.visible !== false && w >= 90 && p.x < vw && p.y < vh && p.x + w > 0 && p.y + h > 0;
       label.hidden = !visible;
       if (visible) {
         // Stick to the top-left of the visible part of the group.
@@ -488,11 +503,18 @@ export class Viewer {
     this.measure(now);
 
     const ratio = Math.min(window.devicePixelRatio || 1, this.tier.pixelRatio);
-    const rect = cam.visibleRect();
     const budget = this.videosOn ? this.pool.size : Math.max(4, Math.floor(this.tier.stillCache / 2));
-    const choice = chooseLevel({ levels: this.levels, tile: this.tile, occupied: this.occupied, rect, zoom: cam.zoom, pixelRatio: ratio, bias: this.lodBias, budget });
-    const level = this.levels[choice.z];
-    const tiles = byDistance(choice.tiles, level, this.tile, cam.x, cam.y);
+    const lod = { levels: this.levels, zoom: cam.zoom, pixelRatio: ratio, bias: this.lodBias, budget };
+    let choice;
+    let tiles;
+    if (cam instanceof SurfaceCamera) {
+      // Rays through the screen find the visible tiles, already nearest-first. The zoom at the middle sets the level.
+      choice = chooseLevel({ ...lod, tilesAt: (z) => cam.visibleTiles(this.levels[z], this.tile, this.occupied[z]) });
+      tiles = choice.tiles;
+    } else {
+      choice = chooseLevel({ ...lod, tile: this.tile, occupied: this.occupied, rect: cam.visibleRect() });
+      tiles = byDistance(choice.tiles, this.levels[choice.z], this.tile, cam.x, cam.y);
+    }
     const levelChanged = choice.z !== this.state.z || tiles.join(';') !== this.state.tiles.join(';');
     this.state.z = choice.z;
     this.state.ideal = choice.ideal;
@@ -562,23 +584,88 @@ export class Viewer {
     const cam = this.camera;
     r.resize(cam.vw, cam.vh, Math.min(window.devicePixelRatio || 1, 2));
     r.begin(this.outside);
-    const origin = cam.contentToScreen(0, 0);
-    r.fillRect({ x: origin.x, y: origin.y, w: this.scene.content.width * cam.zoom, h: this.scene.content.height * cam.zoom }, [...this.bg, 1]);
+    const wall = { x: 0, y: 0, w: this.scene.content.width, h: this.scene.content.height };
 
     let drawn = 0;
-    for (const [x, y] of tiles) if (this.drawTile(z, x, y)) drawn++;
+    if (cam instanceof SurfaceCamera) {
+      // No depth buffer: from inside, nothing on the surface hides anything else. From
+      // outside, the near side always covers the far side, so the back of the wall
+      // (seen past an open end or edge) goes first, as a plain color.
+      r.setSurface(this.geo, cam.matrix(), cam.pose.eye);
+      if (!this.geo.inside) r.meshFill(wall, [...this.bg.map((c) => c * 0.8), 1], -1);
+      // The overview under everything, so tiles the screen rays missed never leave a hole.
+      const base = this.texture(0, 0, 0);
+      const s0 = this.levels[0].scale;
+      if (base) {
+        this.patch(base, wall, { u0: 0, v0: 0, u1: (wall.w * s0) / this.tile.w, v1: (wall.h * s0) / this.tile.h });
+        drawn++;
+      } else this.fill(wall, [...this.bg, 1]);
+      if (z > 0) for (const [x, y] of tiles) if (this.drawTile(z, x, y)) drawn++;
+    } else {
+      this.fill(wall, [...this.bg, 1]);
+      for (const [x, y] of tiles) if (this.drawTile(z, x, y)) drawn++;
+    }
     if (drawn && !this.firstPaint) {
       this.firstPaint = true;
       this.loading.classList.add('vm-done');
     }
     this.drawDividers();
 
-    if (this.hover && !this.players.videos.includes(this.hover)) r.outline(this.screenRect(this.hover), [1, 1, 1, 0.55], 1.5);
+    if (this.hover && !this.players.videos.includes(this.hover)) this.outline(this.hover.rect, [1, 1, 1, 0.55], 1.5);
     const pulse = 0.75 + 0.25 * Math.sin(now / 260);
     const focused = this.players.focused?.video;
     for (const v of this.players.videos) {
-      r.outline(this.screenRect(v), [ACCENT[0], ACCENT[1], ACCENT[2], v === focused ? pulse : 0.6], v === focused ? 2.5 : 1.5);
+      this.outline(v.rect, [ACCENT[0], ACCENT[1], ACCENT[2], v === focused ? pulse : 0.6], v === focused ? 2.5 : 1.5);
     }
+  }
+
+  /** Which side of a curved surface shows the wall: the inner side from inside, the outer from outside. */
+  get face() {
+    return this.geo?.inside ? -1 : 1;
+  }
+
+  /**
+   * Draw a texture, or the `uv` part of it, over a wall rectangle.
+   * @param {import('./renderer.js').TextureInfo} tex
+   * @param {{ x: number, y: number, w: number, h: number }} rect wall pixels
+   * @param {{ u0: number, v0: number, u1: number, v1: number }} [uv]
+   */
+  patch(tex, rect, uv = { u0: 0, v0: 0, u1: 1, v1: 1 }) {
+    if (!this.geo) return this.renderer.drawTexture(tex, this.wallToScreen(rect), uv);
+    // Edge tiles run past the wall; on a surface that would overlap the far edge (or hang off the end), so clip.
+    const c = this.clipToWall(rect);
+    if (!c) return;
+    const du = (uv.u1 - uv.u0) / rect.w;
+    const dv = (uv.v1 - uv.v0) / rect.h;
+    this.renderer.meshTexture(tex, c, { u0: uv.u0 + (c.x - rect.x) * du, v0: uv.v0 + (c.y - rect.y) * dv, u1: uv.u0 + (c.x + c.w - rect.x) * du, v1: uv.v0 + (c.y + c.h - rect.y) * dv }, this.face);
+  }
+
+  /** @param {{ x: number, y: number, w: number, h: number }} rect wall pixels @param {number[]} rgba */
+  fill(rect, rgba) {
+    if (!this.geo) return this.renderer.fillRect(this.wallToScreen(rect), rgba);
+    const c = this.clipToWall(rect);
+    if (c) this.renderer.meshFill(c, rgba, this.face);
+  }
+
+  /** @param {{ x: number, y: number, w: number, h: number }} rect wall pixels @param {number[]} rgba @param {number} width CSS px */
+  outline(rect, rgba, width) {
+    if (!this.geo) return this.renderer.outline(this.wallToScreen(rect), rgba, width);
+    const s = this.wallToScreen(rect);
+    if (s.visible === false) return;
+    // Size the line from the rectangle's size on screen; pad by the glow's width in wall pixels.
+    const pad = (width * 2) / Math.max(1e-6, Math.max(s.w / rect.w, s.h / rect.h));
+    const k = { w: (s.w * (rect.w + pad * 2)) / rect.w, h: (s.h * (rect.h + pad * 2)) / rect.h };
+    this.renderer.meshOutline(rect, rgba, width, pad, k, this.face);
+  }
+
+  clipToWall(r) {
+    const W = this.scene.content.width;
+    const H = this.scene.content.height;
+    const x0 = Math.max(0, r.x);
+    const y0 = Math.max(0, r.y);
+    const x1 = Math.min(W, r.x + r.w);
+    const y1 = Math.min(H, r.y + r.h);
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
   }
 
   /** Masonry column groups sit edge to edge, so a thin line marks where one group ends and the next begins. */
@@ -586,11 +673,11 @@ export class Viewer {
     const l = this.scene.layout;
     if (l.pack !== 'masonry' || l.groupArrange !== 'columns') return;
     const cam = this.camera;
-    const w = Math.max(1, Math.min(2, (l.gap || 4) * cam.zoom));
+    // Line width in wall pixels: 1–2 CSS px.
+    const w = Math.max(1, Math.min(2, (l.gap || 4) * cam.zoom)) / cam.zoom;
     for (const g of this.scene.groups) {
       if (g.x <= 0) continue;
-      const p = cam.contentToScreen(g.x - (l.gap ?? 0) / 2, g.y);
-      this.renderer.fillRect({ x: p.x - w / 2, y: p.y, w, h: g.h * cam.zoom }, [1, 1, 1, 0.16]);
+      this.fill({ x: g.x - (l.gap ?? 0) / 2 - w / 2, y: g.y, w, h: g.h }, [1, 1, 1, 0.16]);
     }
   }
 
@@ -599,11 +686,10 @@ export class Viewer {
    * children (when zooming out), else the matching part of the nearest ancestor.
    */
   drawTile(z, x, y) {
-    const r = this.renderer;
-    const rect = this.tileScreenRect(z, x, y);
+    const rect = this.tileRect(z, x, y);
     const own = this.texture(z, x, y);
     if (own) {
-      r.drawTexture(own, rect);
+      this.patch(own, rect);
       return true;
     }
     if (z < this.levels.length - 1) {
@@ -618,7 +704,7 @@ export class Viewer {
       }
       const texs = kids.map(([cx, cy]) => this.texture(z + 1, cx, cy));
       if (kids.length && texs.every(Boolean)) {
-        kids.forEach(([cx, cy], i) => r.drawTexture(texs[i], this.tileScreenRect(z + 1, cx, cy)));
+        kids.forEach(([cx, cy], i) => this.patch(texs[i], this.tileRect(z + 1, cx, cy)));
         return true;
       }
     }
@@ -636,7 +722,7 @@ export class Viewer {
       if (!tex) continue;
       const u0 = (cx0 * ps - ax * this.tile.w) / this.tile.w;
       const v0 = (cy0 * ps - ay * this.tile.h) / this.tile.h;
-      r.drawTexture(tex, rect, { u0, v0, u1: u0 + (cw * ps) / this.tile.w, v1: v0 + (ch * ps) / this.tile.h });
+      this.patch(tex, rect, { u0, v0, u1: u0 + (cw * ps) / this.tile.w, v1: v0 + (ch * ps) / this.tile.h });
       return true;
     }
     return false;
@@ -680,7 +766,7 @@ export class Viewer {
       `level ${this.state.z}/${this.levels.length - 1} (ideal ${this.state.ideal})  tiles ${this.state.tiles.length}`,
       `videos ${this.videosOn ? `${this.pool.playing}/${this.pool.size}` : 'off'} [${slots}]  drift ${(this.pool.maxDrift * 1000).toFixed(0)}ms`,
       `uploads ${uploads}/frame  seeks ${this.pool.stats.seeks}  stills ${this.stills.count}`,
-      `zoom ${this.camera.zoom.toFixed(3)}  codec ${this.videoSource?.mime.split('"')[1] ?? 'none'}`,
+      `zoom ${this.camera.zoom.toFixed(3)}  ${this.geo ? `${this.geo.type} ${this.geo.inside ? 'inside' : 'outside'}` : 'plane'}  codec ${this.videoSource?.mime.split('"')[1] ?? 'none'}`,
     ].join('\n');
   }
 }

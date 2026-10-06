@@ -60,7 +60,9 @@ Output
       --tile <WxH>            Target tile video size (default 768x432)
       --tile-crf <n>          Tile quality, lower is better (default 28)
       --tile-codecs <list>    Tile codecs in order of preference: h264 (default), vp9
-      --surface <type>        plane | cylinder | sphere
+      --surface <type>        plane (default) | cylinder | sphere
+      --view <side>           Curved surfaces: inside (default, immersive) | outside (object)
+      --arc <degrees>         Curved surfaces: how far the wall wraps around (default 360)
       --no-stills             Skip the still-image pyramid
       --no-full               Tiles only: skip full renditions (the viewer shows an info card)
       --full-max-height <px>  Max height of full renditions (default 1080)
@@ -236,6 +238,8 @@ async function build(args) {
     'tile-crf': { type: 'string' },
     'tile-codecs': { type: 'string' },
     surface: { type: 'string' },
+    view: { type: 'string' },
+    arc: { type: 'string' },
     'no-stills': { type: 'boolean' },
     'no-full': { type: 'boolean' },
     'full-max-height': { type: 'string' },
@@ -263,6 +267,7 @@ async function build(args) {
   const scenePath = requireScene(positionals);
   if (values.canvas && values.cell) throw new UsageError('Use either --canvas or --cell, not both.');
   if (values.surface && !['plane', 'cylinder', 'sphere'].includes(values.surface)) throw new UsageError('--surface must be plane, cylinder or sphere.');
+  if (values.view && !['inside', 'outside'].includes(values.view)) throw new UsageError('--view must be inside or outside.');
   if (values.fit && !['cover', 'contain'].includes(values.fit)) throw new UsageError('--fit must be cover or contain.');
   if (values.pack && !['grid', 'masonry'].includes(values.pack)) throw new UsageError('--pack must be grid or masonry.');
   if (values['group-arrange'] && !['columns', 'bands'].includes(values['group-arrange'])) throw new UsageError('--group-arrange must be columns or bands.');
@@ -273,7 +278,7 @@ async function build(args) {
   }
 
   const overrides = {
-    surface: { type: values.surface },
+    surface: { type: values.surface, view: values.view, arc: num(values.arc, '--arc', { min: 1, max: 360 }) },
     preview: {
       duration: num(values['preview-duration'], '--preview-duration', { min: 0.1, max: 300 }),
       fps: num(values.fps, '--fps', { min: 1, max: 60, int: true }),
@@ -461,7 +466,8 @@ async function info(args) {
     return EXIT.ok;
   }
   console.log(bold(summary.title));
-  row('Videos', `${summary.videos} on a ${summary.surface}${summary.tilesOnly ? ', tiles only' : ''}`);
+  const curved = summary.surface !== 'plane' ? ` (${scene.surface.view ?? 'inside'}, ${scene.surface.arc ?? 360}°)` : '';
+  row('Videos', `${summary.videos} on a ${summary.surface}${curved}${summary.tilesOnly ? ', tiles only' : ''}`);
   if (summary.pack === 'masonry') row('Masonry', `${summary.columns} columns of ${summary.columnWidth}px → ${summary.content} px`);
   else row('Grid', `${summary.grid} cells of ${summary.cell} → ${summary.content} px`);
   row('Pyramid', `${summary.levels.length} levels of ${summary.tile} tiles: ${summary.levels.map((n, z) => `z${z} ${n}`).join(', ')}`);

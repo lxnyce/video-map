@@ -88,6 +88,10 @@ describe('vmap CLI', () => {
     assert.equal(masonry.encoder.h264, 'libx264');
     assert.equal(masonry.encoder.setting, 'off');
 
+    // A curved surface shapes the wall to fill it.
+    const wide = JSON.parse((await vmap(['build', 'scene.json', '--dry-run', '--json', '--surface', 'cylinder', '--view', 'outside', '--arc', '300', '--hw', 'off'], dir)).stdout);
+    assert.ok(wide.layout.width / wide.layout.height > report.layout.width / report.layout.height, 'a wider wall on a cylinder');
+
     const text = await vmap(['build', 'scene.json', '--dry-run', '--no-full', '--hw', 'off'], dir);
     assert.equal(text.code, 0, text.stderr);
     assert.match(text.stdout, /Encoder\s+libx264/);
@@ -98,6 +102,8 @@ describe('vmap CLI', () => {
     assert.match((await vmap(['build', 'scene.json', '--pack', 'pile'], dir)).stderr, /--pack must be grid or masonry/);
     assert.match((await vmap(['build', 'scene.json', '--hw', 'gpu'], dir)).stderr, /--hw must be auto, off, nvenc/);
     assert.equal((await vmap(['build', 'scene.json', '--hw-jobs', '0'], dir)).code, 2);
+    assert.match((await vmap(['build', 'scene.json', '--view', 'sideways'], dir)).stderr, /--view must be inside or outside/);
+    assert.equal((await vmap(['build', 'scene.json', '--arc', '400'], dir)).code, 2);
   });
 
   it('clean deletes a build cache and leaves anything else alone', async () => {

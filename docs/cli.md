@@ -59,7 +59,9 @@ Flags override the scene file, which overrides the defaults.
 | `--column-width <px>` | `384` | Masonry: column width at full zoom. |
 | `--gap <px>` | `0` | Masonry: gutter between videos. |
 | `--group-arrange <mode>` | `columns` | Masonry: `columns` (groups side by side) or `bands` (groups stacked). |
-| `--surface <type>` | `plane` | `plane`, `cylinder` or `sphere` (recorded for the viewer). |
+| `--surface <type>` | `plane` | `plane`, `cylinder` or `sphere`. On a curved surface the wall is shaped to fill it unless `layout.aspect` or `--canvas` is set (see [scene-format.md](scene-format.md#surface)). |
+| `--view <side>` | `inside` | Curved surfaces: `inside` puts the viewer at the center, `outside` shows the surface as an object. |
+| `--arc <degrees>` | `360` | Curved surfaces: how far the wall wraps around (the sphere's longitude span). |
 | `--no-stills` | | Skip the still-image pyramid. |
 | `--no-full` | | Tiles only: skip full renditions. The viewer opens an info card instead of a player. |
 | `--full-max-height <px>` | `1080` | Max height of full renditions. |

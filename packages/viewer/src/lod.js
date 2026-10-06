@@ -47,22 +47,24 @@ export function tilesInRect(level, tile, rect, occupied) {
  * Pick the level to play: the ideal one, coarsened until its visible tiles fit the decoder budget.
  * @param {object} o
  * @param {Level[]} o.levels
- * @param {{ w: number, h: number }} o.tile
- * @param {Set<string>[]} o.occupied per level
- * @param {Rect} o.rect visible content rect
+ * @param {{ w: number, h: number }} [o.tile]
+ * @param {Set<string>[]} [o.occupied] per level
+ * @param {Rect} [o.rect] visible content rect
+ * @param {(z: number) => Array<[number, number]>} [o.tilesAt] visible tiles of a level, in place of tile, occupied and rect (curved surfaces)
  * @param {number} o.zoom
  * @param {number} o.pixelRatio
  * @param {number} o.bias
  * @param {number} o.budget max concurrent tile videos
  * @returns {{ z: number, ideal: number, tiles: Array<[number, number]> }}
  */
-export function chooseLevel({ levels, tile, occupied, rect, zoom, pixelRatio, bias, budget }) {
+export function chooseLevel({ levels, tile, occupied, rect, tilesAt, zoom, pixelRatio, bias, budget }) {
+  const at = tilesAt ?? ((z) => tilesInRect(levels[z], tile, rect, occupied[z]));
   const ideal = idealLevel(levels, zoom, pixelRatio, bias);
   let z = ideal;
-  let tiles = tilesInRect(levels[z], tile, rect, occupied[z]);
+  let tiles = at(z);
   while (z > 0 && tiles.length > budget) {
     z--;
-    tiles = tilesInRect(levels[z], tile, rect, occupied[z]);
+    tiles = at(z);
   }
   return { z, ideal, tiles };
 }

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
+    "./surface": "./src/surface.js",
     "./validate": "./src/validate.js",
     "./scene.schema.json": "./schema/scene.schema.json"
   },

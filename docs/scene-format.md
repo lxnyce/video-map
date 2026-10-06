@@ -73,7 +73,7 @@ Videos are grouped, sorted, then packed. Two packing strategies:
 | `pack` | `"grid"` | `"grid"` or `"masonry"`. |
 | `groupBy` | `"category"` | `"none"`, `"category"`, `"tag:<prefix>"` or `"meta.<key>"`. Videos without a value go to an "Other" group, placed last. |
 | `sortBy` | `["title"]` | Keys: `id`, `title`, `duration`, `category`, `src`, `meta.<key>`. Prefix with `-` for descending order. Missing values sort last. In masonry this is also the order videos are dealt to columns. |
-| `aspect` | `"16:9"` | Wall aspect, when `output.canvas` isn't set. |
+| `aspect` | `"16:9"`, or the surface's shape | Wall aspect, when `output.canvas` isn't set. On a cylinder or sphere it defaults to the shape that fills the surface (see [`surface`](#surface)). |
 | `groupGap` | `1` (grid), `0` (masonry) | Empty cells (grid) or whole columns (masonry) between groups. |
 | `labels` | `true` | Whether the viewer shows group labels. In masonry, a label strip is reserved above each group. |
 | `cellAspect` | `"16:9"` | Grid only. Aspect of each cell. |
@@ -123,10 +123,26 @@ VP9 tiles, stills and posters never use hardware encoding.
 
 | Field | Default | Notes |
 |---|---|---|
-| `type` | `"plane"` | `"plane"`, `"cylinder"` or `"sphere"`. Curved surfaces are rendered by the viewer in milestone 4. |
-| `arc` | `360` | Cylinder: degrees wrapped. Sphere: longitude span. |
-| `latitudeBand` | `[-60, 60]` | Sphere only. Avoids distortion at the poles. |
-| `view` | `"inside"` | `"inside"` (immersive) or `"outside"` (object). |
+| `type` | `"plane"` | `"plane"`, `"cylinder"` or `"sphere"`. |
+| `arc` | `360` | Cylinder: degrees wrapped. Sphere: longitude span. At 360 the wall's two ends meet. |
+| `latitudeBand` | `[-60, 60]` | Sphere only: `[south, north]` in degrees, between -89 and 89. Keeps the wall away from the poles. |
+| `view` | `"inside"` | `"inside"` puts the viewer at the center, looking out at the wall (immersive). `"outside"` shows the surface as an object to turn. |
+
+At build time the surface only sets the wall's default shape. Everything else
+happens in the viewer, so you can change `view`, `arc` or the band in a built
+`scene.json` without re-encoding. The wall then keeps the shape it was built
+with.
+
+- **Cylinder:** the wall wraps the cylinder at its own scale, with the arc's
+  length equal to the wall's width, so nothing stretches. Unless
+  `layout.aspect` or `output.canvas` is set, the wall is shaped so its height
+  is 1.5 times the radius: about 4.2:1 for a full circle and 2.1:1 for half
+  of one.
+- **Sphere:** the wall is mapped into the latitude band with the Mercator
+  projection, which keeps every video's shape. Videos only get smaller away
+  from the equator: half size at ±60°. The default wall shape fills the band:
+  about 2.4:1 for 360° and ±60°. A wall of a different shape is centered: a
+  taller one spans less longitude, and a wider one spans less latitude.
 
 ## Runtime manifest (`dist/scene.json`)
 

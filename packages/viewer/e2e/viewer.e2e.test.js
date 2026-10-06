@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -26,6 +26,10 @@ try {
   chromium = null;
 }
 const skip = !hasFfmpeg ? 'ffmpeg not installed' : !chromium ? 'no Playwright browser (npx playwright install chromium)' : false;
+const CURVED = {
+  cylinder: { type: 'cylinder', arc: 360, latitudeBand: [-60, 60], view: 'inside' },
+  sphere: { type: 'sphere', arc: 360, latitudeBand: [-60, 60], view: 'outside' },
+};
 const GL_ARGS = ['--autoplay-policy=no-user-gesture-required', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 
 describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
@@ -55,6 +59,12 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
       videos,
     }));
     await buildScene({ scenePath: path.join(dir, 'scene.json'), jobs: 4 });
+    // The surface is only a viewer setting, so curved walls are copies of the grid build with a different surface.
+    for (const [name, surface] of Object.entries(CURVED)) {
+      await cp(path.join(dir, 'dist'), path.join(dir, name), { recursive: true });
+      const file = path.join(dir, name, 'scene.json');
+      await writeFile(file, JSON.stringify({ ...JSON.parse(await readFile(file, 'utf8')), surface }));
+    }
 
     // Masonry, tiles only: portrait, landscape and square videos, free to cross tile edges.
     const shapes = ['320x180', '180x320', '240x240'];
@@ -73,6 +83,7 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
     await buildScene({ scenePath: path.join(dir, 'masonry/scene.json'), jobs: 4 });
     // One server for both walls: the grid at /, the masonry wall at /masonry/.
     await rename(path.join(dir, 'masonry/dist'), path.join(dir, 'dist/masonry'));
+    for (const name of Object.keys(CURVED)) await rename(path.join(dir, name), path.join(dir, 'dist', name));
     ({ server } = await startServer({ root: path.join(dir, 'dist'), port: 0, host: '127.0.0.1' }));
     base = `http://127.0.0.1:${/** @type {any} */ (server.address()).port}/`;
     browser = await chromium.launch({ args: GL_ARGS });
@@ -210,6 +221,78 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
     await page.waitForTimeout(800);
     assert.equal(await page.getAttribute('.vm-leader', 'visibility'), 'visible', 'still linked to its place on the wall');
     assert.equal(await page.locator('.vm-label').count(), 3);
+    await page.close();
+  });
+
+  /** Viewport point of a video's middle on the wall, and whether it's in view. */
+  const videoPoint = (page, id) => page.evaluate((vid) => {
+    const v = /** @type {any} */ (window).VideoMap.instances[0];
+    const r = v.byId.get(vid).rect;
+    return v.camera.project(r.x + r.w / 2, r.y + r.h / 2);
+  }, id);
+
+  it('plays a wall wrapped inside a cylinder, picks on the curve, and wraps at the seam', async () => {
+    const page = await open('', { width: 1280, height: 760 }, {}, 'cylinder/');
+    await page.waitForFunction(() => /** @type {any} */ (window).VideoMap.instances[0]?.pool.slots.some((s) => s.state === 'playing'), null, { timeout: 15_000 });
+    const info = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      // A video well off to the side, where the wall curves most on screen.
+      const p = v.camera.screenToContent(1000, 380);
+      return { id: v.index.at(p.x, p.y)?.id, label: v.canvas.getAttribute('aria-label'), width: v.scene.content.width };
+    });
+    assert.ok(info.id, 'a video at the side of the screen');
+    assert.match(info.label, /cylinder of 14 videos\. Drag to look around/);
+    await page.mouse.click(1000, 380);
+    await page.waitForSelector('.vm-window');
+    assert.equal(await page.getAttribute('.vm-window', 'aria-label'), `Video ${info.id.slice(1)}`);
+    await page.waitForTimeout(500);
+    assert.equal(await page.getAttribute('.vm-leader', 'visibility'), 'visible');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.vm-window'));
+
+    // Drag right past the left end of the wall: the camera comes round to its right end.
+    for (let i = 0; i < 6; i++) {
+      await page.mouse.move(300, 400);
+      await page.mouse.down();
+      await page.mouse.move(1100, 400, { steps: 6 });
+      await page.mouse.up();
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(800);
+    const after = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      return { x: v.camera.x, tiles: v.state.tiles.length, budget: v.pool.size };
+    });
+    assert.ok(after.x >= 0 && after.x < info.width, `x stays on the wall (${after.x})`);
+    assert.ok(after.tiles <= after.budget);
+    await page.close();
+  });
+
+  it('turns a sphere seen from outside, and only picks the side facing the camera', async () => {
+    const page = await open('#v=v7', { width: 1280, height: 760 }, {}, 'sphere/');
+    await page.waitForSelector('.vm-window');
+    await page.waitForTimeout(600);
+    // The deep link turns the sphere so the video faces the camera.
+    const pt = await videoPoint(page, 'v7');
+    assert.ok(pt.visible);
+    assert.ok(Math.abs(pt.x - 640) < 200 && Math.abs(pt.y - 380) < 200, `v7 near the middle (${pt.x}, ${pt.y})`);
+    await page.focus('.vm-canvas');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.vm-window'));
+
+    const back = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      v.camera.set(v.camera.homeView());
+      const far = v.scene.videos.map((x) => ({ id: x.id, p: v.camera.project(x.rect.x + x.rect.w / 2, x.rect.y + x.rect.h / 2) })).find((x) => !x.p.visible);
+      return { far: far?.id ?? null, corner: v.pick(4, 4) };
+    });
+    assert.ok(back.far, 'some videos are round the back');
+    assert.equal(back.corner, null, 'the space around the sphere picks nothing');
+    await page.waitForTimeout(300);
+    await page.mouse.click(640, 380);
+    await page.waitForSelector('.vm-window');
+    const opened = await page.getAttribute('.vm-window', 'aria-label');
+    assert.notEqual(opened, `Video ${back.far.slice(1)}`);
     await page.close();
   });
 

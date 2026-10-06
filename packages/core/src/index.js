@@ -17,6 +17,7 @@ export {
   tileContents,
   levelContentSize,
 } from './pyramid.js';
+export { CYLINDER_HEIGHT, mercator, inverseMercator, surfaceAspect, surfaceGeometry, surfacePoint, surfaceScale, wallPoint, surfaceHit, wrapDelta } from './surface.js';
 export { SCENE_FORMAT, SCENE_VERSION, PATHS, fillTemplate, createRuntimeManifest } from './manifest.js';
 export { sceneSchema } from './schema.js';
 
@@ -29,3 +30,4 @@ export { sceneSchema } from './schema.js';
 /** @typedef {import('./masonry.js').MasonryLayout} MasonryLayout */
 /** @typedef {import('./pyramid.js').Pyramid} Pyramid */
 /** @typedef {import('./manifest.js').ManifestVideo} ManifestVideo */
+/** @typedef {import('./surface.js').SurfaceGeometry} SurfaceGeometry */

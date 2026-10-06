@@ -1,6 +1,6 @@
 # VideoMap — Implementation Plan (for review)
 
-**Status:** Milestones 1–3 built · **Revision 2:** 2026-10-05
+**Status:** Milestones 1–4 built · **Revision 2:** 2026-10-05
 
 > **What changed in revision 2:** videos are no longer cropped by default
 > (G12). The packing strategy can now be chosen, and masonry columns are the
@@ -207,6 +207,11 @@ back to defaults tuned for phones.
      the most compact packing nearest the target aspect wins.
      *(As built: typical category mixes fill 80–88% of the grid.)* For a cylinder the grid wraps horizontally. For a sphere the grid
      is laid out on equirectangular (u,v) space inside the latitude band.
+     *(As built: the layout itself doesn't change for a surface. Only its
+     default target aspect does, so the wall fills the surface: a cylinder
+     wall is 1.5 radii tall (about 4.2:1 at 360°), and a sphere wall fills the
+     band in Mercator space (about 2.4:1 at 360° and ±60°). The sphere uses
+     Mercator, not equirectangular, mapping; see §8.1.)*
    * The **grid snaps to tile boundaries.** Tile dimensions are an integer
      multiple of the cell dimensions at the deepest level, and each level up
      doubles the cells per tile along each axis, so **no cell ever straddles two tiles at any level.** That
@@ -525,7 +530,7 @@ dist/
 ### 8.1 Renderer
 
 * **A small custom WebGL renderer** (WebGL2, with a WebGL1 fallback), not
-  three.js. *(As built: about 17 KB gzipped JS for the whole viewer.)* The geometry is just tessellated quad patches, and a few KB of
+  three.js. *(As built: about 22 KB gzipped JS for the whole viewer, curved surfaces included.)* The geometry is just tessellated quad patches, and a few KB of
   focused code beats a 150 KB+ dependency on low-end phones.
   *(Decision point: three.js would speed up development. See §13.)*
 * **One unified quadtree.** A tile (z, x, y) covers a (u,v) rectangle. A
@@ -535,6 +540,22 @@ dist/
   * sphere: lon/lat from (u,v) within the latitude band
 * Each visible tile is a patch mesh (tessellated more finely on curved
   surfaces) with its own texture.
+* *(As built, milestone 4: the plane keeps its 2D camera and quad path. Curved
+  surfaces share one mapping in `core/surface.js`, in wall pixels, so a
+  cylinder's arc length equals the wall's width and nothing stretches. **The
+  sphere uses Mercator inside the band instead of equirectangular.** Mercator
+  keeps every video's shape and only shrinks it away from the equator (half
+  size at ±60°). Equirectangular would squash videos sideways by the same
+  factor. The vertex shader places each patch vertex, with about one grid cell
+  per 2° of arc. There is no depth buffer: from inside nothing on the surface
+  hides anything else, and from outside the back of the wall is drawn first,
+  as a plain color. The surface camera keeps the flat camera's `x, y, zoom`
+  (the wall pixel in the middle of the screen and CSS px per wall px there), so
+  deep links, flights, flings and Locate are shared. Inside a cylinder the
+  camera slides along the axis instead of pitching, so rows stay level.
+  Visible tiles come from rays cast through a 48 px screen grid. One level is
+  chosen from the zoom in the middle of the screen, and the level-0 overview is
+  drawn underneath so missed slivers never show holes.)*
 * **LOD selection:** choose the level where one texel ≈ one screen pixel,
   scaled by `min(devicePixelRatio, 1.5)`. On high-DPR phones that roughly halves
   the tile count. A tier-dependent bias can lower it further.
@@ -585,6 +606,12 @@ dist/
   tapping a video opens it.)*
 * Cylinder and sphere: drag to orbit or look around, pinch for field of view or
   dolly, gyroscope look-around on mobile (opt-in).
+  *(As built: drag moves the wall pixel under the middle of the screen with
+  the pointer, and pinch or wheel zooms about the pointer. Inside, zoom is the
+  field of view, at most 100° tall and 120° wide. Outside, it is the camera's
+  distance. A 360° wall wraps, and flights take the short way round. The
+  gyroscope look-around is not built yet: it needs a permission prompt on iOS
+  and testing on real devices. It moves to milestone 7.)*
 * Keyboard: arrow keys, `+`/`-`, Tab through cells, Enter to open.
 * Hovering (desktop) or long-pressing (mobile) a cell shows its title and tags.
 
@@ -707,10 +734,10 @@ throttling, plus a manual device matrix (below) before each milestone.
 | **1. Core + CLI MVP** — *built* | Schema, layout (plane), normalize and loop, tile pyramid, stills, full renditions, `vmap build/validate/preview`, cache | Unit tests on layout and pyramid math; integration tests on synthetic `testsrc` clips |
 | **2. Viewer MVP (plane)** — *built* | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
 | **3. Layout and build revisions** (revision 2) — *built* | **3a.** `fit: "contain"` by default, plus a per-video `fit` override. **3b.** Tiles-only: info-card window, size estimate with and without media, `vmap clean`, `--no-keep-cache`. **3c.** Hardware encoding: detection by test encode, `auto` by default, per-encoder settings tables, a hardware session pool, libx264 fallback, `--hw`/`--hw-jobs`, `hardwareFinal` (default off after measuring, `--hw-final`), `vmap doctor` output. **3d.** Masonry: the rectangle layout model in `core` and the manifest (`videos[].rect`), the shortest-column packer as an opt-in (`grid` stays the default), both group arrangements (side-by-side column groups by default, and bands), tiles that are whole columns wide, cropped compositing for clips that cross tiles, `avoidSplits`, sync groups in the scheduler, and rectangle-based picking, highlight and labels | 3a–3c are small and independent, so they ship first. 3d changes the manifest, so it comes before curved surfaces and discovery, which build on the layout model. Tests: packer unit tests (order, column balance, aspect, `avoidSplits`); a build test with portrait, landscape and square sources that checks nothing is cropped; an encoder-fallback test with a fake failing encoder; a hardware vs libx264 timing and size comparison in the build report; a Playwright test that clicks a masonry video crossing a tile edge. *(As built: all of these exist. The no-cropping test samples each video's border pixels in the decoded tiles, including videos split across two tiles. The hardware test checks NVENC tiles with ffprobe (Main profile, a keyframe per second) and skips without a working encoder. Building masonry walls from repeated sources found two latent races, fixed here: videos sharing a source shared a clip file, and tiles with identical content shared a master file.)* |
-| **4. Curved surfaces** (next) | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | Works with both grid and masonry |
-| **5. Discovery** | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | |
+| **4. Curved surfaces** — *built* | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | Works with both grid and masonry. *(As built: `--view` and `--arc` on the CLI, and a default wall shape per surface. Picking, hover, outlines drawn on the surface, labels, leader lines (pointing off screen when a video is round the back), Locate and deep links all work on the curve. Tests: unit tests of the mapping (round trips, the seam, Mercator keeping shapes, centering in the band, ray hits that skip the back of the wall) and of the camera on five surface/view combinations (projection, picking, zoom about the pointer, drag, limits, the wrap, the matrix against the CPU projection). Browser tests click a video at the side of an inside cylinder, drag past the seam, and on an outside sphere check the deep link, back-side culling and that the space around the sphere picks nothing. Gyroscope look-around moved to milestone 7.)* |
+| **5. Discovery** (next) | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | |
 | **6. Studio** | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | |
-| **7. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`) | |
+| **7. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`), gyroscope look-around and an orientation compass for curved surfaces | |
 | **Later** | More packing strategies: `rows` (justified), `random`, `rotated`, `stack` (photo stack). GPU filter chain for faster builds. A live tile crop in the tiles-only info card | The rectangle model from 3d is designed so these are new packers plus rotated compositing, not a new pipeline |
 
 **Test device matrix:** an iPhone SE (2nd gen) on iOS 16 and the latest iOS, a
@@ -726,7 +753,7 @@ mid-range Android, desktop Chrome, Firefox and Safari.
 | Decoder limits lower than expected on some devices | Adaptive budget, LOD bias, and fallback to stills while moving. The phase 0 spike measures this first |
 | Video→texture upload is slow on old GPUs | Lower preview fps, smaller tiles (512) for low tier, `requestVideoFrameCallback`, and an upload budget per frame |
 | Tiles drifting out of sync visibly | Identical frame counts, a master clock, rate nudging. Tile boundaries never cut through cells, so drift between tiles never splits one video |
-| Sphere distortion near poles | Default latitude band of ±60° and per-row cell sizing as a later option |
+| Sphere distortion near poles | Default latitude band of ±60° and per-row cell sizing as a later option. *(As built: Mercator mapping keeps shapes, so only size changes with latitude.)* |
 | Large output sizes | A dry-run size estimate, CRF and bitrate controls, optional skipping of the deepest level, and stills only for the deepest level |
 | Source variety (rotation, odd sample aspect ratio, VFR, HDR) | Normalize everything when probing (rotation metadata, SAR, tone-map HDR to SDR, constant fps) |
 | ffmpeg availability | Use the system ffmpeg if present, otherwise `ffmpeg-static`. `vmap doctor` checks codecs |
