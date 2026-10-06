@@ -5,7 +5,8 @@ import { Camera } from '../src/camera.js';
 import { TIERS, detectTier } from '../src/device.js';
 import { formatHash, parseHash } from '../src/hash.js';
 import { byDistance, chooseLevel, idealLevel, occupancy, tilesInRect } from '../src/lod.js';
-import { createRectIndex, normalizeScene, sharedTiles } from '../src/rects.js';
+import { applyWall, createRectIndex, groupOf, normalizeScene, sharedTiles, wallsOf } from '../src/rects.js';
+import { NO_FILTER, createSearch, facets, fold, isFiltering } from '../src/search.js';
 
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -138,11 +139,21 @@ describe('deep links', () => {
   it('round-trips camera and video', () => {
     const hash = formatHash({ cam: { x: 1234.56, y: 78.9, zoom: 0.123456 }, v: 'reef 01' });
     assert.equal(hash, '#cam=1235,79,0.1235&v=reef%2001');
-    assert.deepEqual(parseHash(hash), { v: 'reef 01', cam: { x: 1235, y: 79, zoom: 0.1235 } });
+    assert.deepEqual(parseHash(hash), { v: 'reef 01', cam: { x: 1235, y: 79, zoom: 0.1235 }, layout: null, q: '', cats: [], tags: [] });
+  });
+
+  it('round-trips the layout, search text and filters, with commas inside items', () => {
+    const state = { layout: 'by place', cam: { x: 10, y: 20, zoom: 1 }, v: null, q: 'café & bar', cats: ['ocean', 'sky'], tags: ['place:Lisbon, PT', 'aerial'] };
+    const hash = formatHash(state);
+    assert.match(hash, /^#layout=by%20place&cam=10,20,1&q=caf%C3%A9%20%26%20bar&cat=ocean,sky&tag=place%3ALisbon%2C%20PT,aerial$/);
+    assert.deepEqual(parseHash(hash), state);
+    assert.equal(formatHash({ q: '   ', cats: [], tags: [] }), '', 'blank search and empty filters stay out of the URL');
+    assert.equal(parseHash('#q=a+b').q, 'a b');
   });
 
   it('ignores junk', () => {
-    assert.deepEqual(parseHash('#cam=a,b,c&v=&x=1&%E0'), { v: null, cam: null });
+    assert.deepEqual(parseHash('#cam=a,b,c&v=&x=1&%E0'), { v: null, cam: null, layout: null, q: '', cats: [], tags: [] });
+    assert.deepEqual(parseHash('#tag=%E0,ok,').tags, ['ok']);
     assert.equal(formatHash({}), '');
   });
 });
@@ -212,5 +223,109 @@ describe('video rectangles', () => {
     assert.deepEqual([...shared[2]].sort(), ['0,0', '0,1'], 'the video across y=100 links two deepest tiles');
     assert.deepEqual([...shared[1]], [], 'at level 1 it fits inside one tile');
     assert.deepEqual([...shared[0]], [], 'level 0 is a single tile');
+  });
+});
+
+describe('search and filters', () => {
+  const videos = [
+    { id: 'a', title: 'Coral Reef', categories: ['ocean'], tags: ['fish', 'place:Lisbon'], description: 'Bright café fish' },
+    { id: 'b', title: 'Night Market', categories: ['city'], tags: ['place:Kyoto', 'night'], meta: { year: 2021, camera: 'Sony' } },
+    { id: 'c', title: 'Harbour at Night', categories: ['city', 'ocean'], tags: ['night', 'place:Lisbon'], credits: { author: 'Ana Ruiz' } },
+    { id: 'd', title: 'Pines', categories: ['forest'], tags: ['place:Oslo'] },
+  ];
+  const s = createSearch(videos, (id) => ({ ocean: 'Sea and coast' })[id] ?? id);
+  const ids = (m) => videos.filter((_, i) => m[i]).map((v) => v.id);
+  const q = (text) => ({ q: text, cats: [], tags: [] });
+
+  it('matches nothing to filter with null', () => {
+    assert.equal(s.match(NO_FILTER), null);
+    assert.equal(s.match(q('  ')), null);
+    assert.ok(!isFiltering(q(' ')));
+    assert.ok(isFiltering({ q: '', cats: [], tags: ['x'] }));
+  });
+
+  it('needs every word, anywhere in the text, ignoring case and accents', () => {
+    assert.deepEqual(ids(s.match(q('night'))), ['b', 'c']);
+    assert.deepEqual(ids(s.match(q('NIGHT harbour'))), ['c']);
+    assert.deepEqual(ids(s.match(q('cafe'))), ['a'], 'description, without the accent');
+    assert.deepEqual(ids(s.match(q('coast'))), ['a', 'c'], 'category labels');
+    assert.deepEqual(ids(s.match(q('sony 2021'))), ['b'], 'meta values');
+    assert.deepEqual(ids(s.match(q('ruiz'))), ['c'], 'credits');
+    assert.deepEqual(ids(s.match(q('kyoto'))), ['b'], 'tags');
+    assert.equal(fold('Ça Va'), 'ca va');
+  });
+
+  it('takes any of the chosen categories, and all of the chosen tags', () => {
+    assert.deepEqual(ids(s.match({ q: '', cats: ['forest', 'city'], tags: [] })), ['b', 'c', 'd']);
+    assert.deepEqual(ids(s.match({ q: '', cats: [], tags: ['night', 'place:Lisbon'] })), ['c']);
+    assert.deepEqual(ids(s.match({ q: 'reef', cats: ['ocean'], tags: ['fish'] })), ['a']);
+    assert.deepEqual(ids(s.match({ q: 'reef', cats: ['city'], tags: [] })), []);
+  });
+
+  it('offers category chips in the scene order and the commonest tags, leaving out chips that filter nothing', () => {
+    const more = [...videos, { id: 'e', title: 'E', categories: ['misc'], tags: ['place:Lisbon'] }];
+    const f = facets(more, [{ id: 'forest', label: 'Woods', color: '#3a9b5c' }, { id: 'ocean' }, { id: 'unused' }], 2);
+    assert.deepEqual(f.categories.map((c) => `${c.id}:${c.label}:${c.count}`), ['forest:Woods:1', 'ocean:ocean:2', 'city:city:2', 'misc:misc:1']);
+    assert.equal(f.categories[0].color, '#3a9b5c');
+    assert.deepEqual(f.tags.map((t) => `${t.id}:${t.count}`), ['place:Lisbon:3', 'night:2']);
+    assert.equal(f.moreTags, 3);
+    const same = facets([{ categories: ['x'], tags: ['all'] }, { categories: ['x'], tags: ['all'] }]);
+    assert.deepEqual(same.categories, [], 'one category that every video has');
+    assert.deepEqual(same.tags, []);
+  });
+});
+
+describe('layouts and groups', () => {
+  const scene = normalizeScene({
+    layout: { pack: 'grid' },
+    grid: { cols: 4, rows: 1, cell: { w: 100, h: 50 } },
+    content: { width: 400, height: 50 },
+    pyramid: { tile: { w: 200, h: 50 }, levels: [] },
+    labels: true,
+    groups: [{ label: 'A', x: 0, y: 0, w: 200, h: 50, count: 2 }, { label: 'B', x: 200, y: 0, w: 200, h: 50, count: 1 }],
+    layouts: [
+      { id: 'default', label: 'By category' },
+      {
+        id: 'year', label: 'By year', layout: { pack: 'masonry' }, grid: null, content: { width: 100, height: 300 },
+        pyramid: { tile: { w: 100, h: 100 }, levels: [] }, labels: false, groups: [{ label: '2020', x: 0, y: 0, w: 100, h: 300, count: 3 }],
+        rects: [[0, 0, 100, 60], null, [0, 100, 100, 200]], cells: null,
+      },
+    ],
+    videos: [
+      { id: 'a', rect: { x: 0, y: 0, w: 100, h: 50 }, cell: { col: 0, row: 0 } },
+      { id: 'b', rect: { x: 100, y: 0, w: 100, h: 50 }, cell: { col: 1, row: 0 } },
+      { id: 'c', rect: { x: 300, y: 0, w: 100, h: 50 }, cell: { col: 3, row: 0 } },
+    ],
+  });
+
+  it('reads the main arrangement and the alternates, and switches between them', () => {
+    const walls = wallsOf(scene);
+    assert.deepEqual(walls.map((w) => `${w.id}:${w.label}`), ['default:By category', 'year:By year']);
+    applyWall(scene, walls[1]);
+    assert.equal(scene.layout.pack, 'masonry');
+    assert.equal(scene.content.height, 300);
+    assert.equal(scene.labels, false);
+    assert.deepEqual(scene.videos.map((v) => v.rect), [{ x: 0, y: 0, w: 100, h: 60 }, null, { x: 0, y: 100, w: 100, h: 200 }]);
+    assert.deepEqual(scene.videos.map((v) => v.cell), [null, null, null]);
+    applyWall(scene, walls[0]);
+    assert.deepEqual(scene.videos[2].rect, { x: 300, y: 0, w: 100, h: 50 });
+    assert.deepEqual(scene.videos[1].cell, { col: 1, row: 0 });
+    assert.equal(wallsOf({ ...scene, layouts: undefined })[0].id, 'default', 'scenes from before milestone 5 have one layout');
+  });
+
+  it('puts each video in the group that holds its middle', () => {
+    assert.deepEqual([...groupOf(scene.videos, scene.groups)], [0, 0, 1]);
+    assert.deepEqual([...groupOf([{ rect: null }, { rect: { x: 900, y: 0, w: 1, h: 1 } }], scene.groups)], [-1, -1]);
+  });
+
+  it('finds the videos meeting a region, each once', () => {
+    const items = [{ rect: { x: 0, y: 0, w: 100, h: 100 } }, { rect: { x: 100, y: 0, w: 300, h: 100 } }, { rect: { x: 0, y: 100, w: 400, h: 100 } }, { rect: null }];
+    const index = createRectIndex(items, 400, 200, 50);
+    const found = (x0, y0, x1, y1) => [...index.query(x0, y0, x1, y1)].map((i) => items.indexOf(i)).sort();
+    assert.deepEqual(found(0, 0, 400, 200), [0, 1, 2]);
+    assert.deepEqual(found(10, 10, 50, 50), [0]);
+    assert.deepEqual(found(99, 90, 101, 99), [0, 1]);
+    assert.deepEqual(found(-50, -50, 400, 0), [], 'touching an edge is not meeting');
+    assert.deepEqual(found(500, 0, 600, 100), []);
   });
 });

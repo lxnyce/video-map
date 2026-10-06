@@ -3,7 +3,7 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { formatSize, planWall, resolveConfig, tileCodec } from '@videomap/core';
+import { formatSize, planWall, resolveLayouts, tileCodec } from '@videomap/core';
 import { assignIds, validateScene } from '@videomap/core/validate';
 import { exists, isUrl } from './cache.js';
 import { isWebCompatible, previewWindow } from './encode.js';
@@ -67,7 +67,9 @@ export async function loadScene(scenePath) {
  */
 export async function planBuild({ scenePath, scene, overrides, cache, tools, limit, progress, toneMapAvailable = false }) {
   const sceneDir = path.dirname(path.resolve(scenePath));
-  const config = resolveConfig(scene, overrides);
+  // The main layout, then any pre-baked alternates; they share everything but the layout.
+  const arrangements = resolveLayouts(scene, overrides);
+  const config = arrangements[0].config;
   const ids = assignIds(scene.videos);
   const warnings = [];
 
@@ -108,29 +110,43 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
   phase.end();
   const probeSeconds = (Date.now() - probeStarted) / 1000;
 
-  // Layout and pyramid: every video becomes a rectangle on the wall.
-  const wall = planWall(
-    sources.map((s) => ({
-      id: s.id,
-      title: s.entry.title ?? s.id,
-      src: s.entry.src,
-      categories: s.entry.categories,
-      tags: s.entry.tags,
-      meta: s.entry.meta,
-      duration: s.probe.duration,
-      aspect: s.probe.width / s.probe.height,
-    })),
-    config,
-    { categories: scene.categories ?? [] },
-  );
-  warnings.push(...wall.warnings);
-  const { layout, pyramid, tiles } = wall;
-  const codecs = config.output.tileCodecs.map((c) => tileCodec(c, pyramid.tile.w, pyramid.tile.h, config.preview.fps));
+  // Layout and pyramid, per arrangement: every video becomes a rectangle on the wall.
+  const layoutVideos = sources.map((s) => ({
+    id: s.id,
+    title: s.entry.title ?? s.id,
+    src: s.entry.src,
+    categories: s.entry.categories,
+    tags: s.entry.tags,
+    meta: s.entry.meta,
+    duration: s.probe.duration,
+    aspect: s.probe.width / s.probe.height,
+  }));
+  /** @type {Wall[]} */
+  const walls = arrangements.map(({ id, label, config: c }, i) => {
+    const w = planWall(layoutVideos, c, { categories: scene.categories ?? [] });
+    const prefix = i === 0 ? '' : `layouts/${id}/`;
+    warnings.push(...w.warnings.map((msg) => (i === 0 ? msg : `layouts "${id}": ${msg}`)));
+    return {
+      id,
+      label,
+      config: c,
+      prefix,
+      layout: w.layout,
+      pyramid: w.pyramid,
+      tiles: w.tiles,
+      codecs: c.output.tileCodecs.map((codec) => {
+        const t = tileCodec(codec, w.pyramid.tile.w, w.pyramid.tile.h, c.preview.fps);
+        return { ...t, template: prefix + t.template };
+      }),
+      // How each video fills its rectangle. Masonry rectangles already have the video's shape.
+      fits: sources.map((s) => (w.layout.pack === 'grid' ? s.entry.fit ?? c.layout.fit : 'contain')),
+    };
+  });
+  const { layout, pyramid, tiles, codecs } = walls[0];
 
-  // How each video fills its rectangle. Masonry rectangles already have the video's shape.
   for (const s of sources) {
     s.rect = layout.rects[s.index];
-    s.fit = layout.pack === 'grid' ? s.entry.fit ?? config.layout.fit : 'contain';
+    s.fit = walls[0].fits[s.index];
   }
 
   // Source warnings.
@@ -153,6 +169,7 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
     sceneDir,
     config,
     sources,
+    walls,
     layout,
     pyramid,
     tiles,
@@ -160,9 +177,24 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
     looped,
     warnings,
     probeSeconds,
-    estimate: estimateSizes({ config, pyramid, tiles, sources }),
+    estimate: estimateSizes({ config, walls, sources }),
   };
 }
+
+/**
+ * One arrangement of the videos and its tile pyramid. The first is the main
+ * layout, built at the top of the output; alternates go under layouts/<id>/.
+ * @typedef {object} Wall
+ * @property {string} id
+ * @property {string} label
+ * @property {import('@videomap/core').ResolvedConfig} config
+ * @property {string} prefix  output folder of its tiles and stills ("" for the main layout)
+ * @property {import('@videomap/core').WallLayout} layout
+ * @property {import('@videomap/core').Pyramid} pyramid
+ * @property {Array<Array<[number, number]>>} tiles
+ * @property {Array<ReturnType<typeof tileCodec>>} codecs  with `prefix` in their templates
+ * @property {Array<'cover'|'contain'>} fits  per video
+ */
 
 /** @typedef {Awaited<ReturnType<typeof planBuild>>} BuildPlan */
 
@@ -170,14 +202,22 @@ export async function planBuild({ scenePath, scene, overrides, cache, tools, lim
  * Rough output size, printed before encoding. Tiles typically land at ~70% of
  * their bitrate cap; full renditions are copied when already web-friendly.
  * `withMedia` and `withoutMedia` are the totals with and without full
- * renditions, whichever this build makes (plan §5.3).
+ * renditions, whichever this build makes (plan §5.3). Every arrangement
+ * (`walls`) has its own tiles and stills.
+ * @param {{ config: import('@videomap/core').ResolvedConfig, walls: Array<{ pyramid: { tile: { w: number, h: number } }, tiles: any[][] }>, sources: any[] }} o
  */
-export function estimateSizes({ config, pyramid, tiles, sources }) {
-  const tileCount = tiles.reduce((n, level) => n + level.length, 0);
-  const { w, h } = pyramid.tile;
+export function estimateSizes({ config, walls, sources }) {
   const { fps, duration } = config.preview;
-  const tileBytes = tileCount * ((w * h * fps * 0.12) / 8) * duration * 0.7;
-  const stillBytes = config.output.stills ? tileCount * w * h * 0.09 : 0;
+  let tileCount = 0;
+  let tileBytes = 0;
+  let stillBytes = 0;
+  for (const { pyramid, tiles } of walls) {
+    const count = tiles.reduce((n, level) => n + level.length, 0);
+    const { w, h } = pyramid.tile;
+    tileCount += count;
+    tileBytes += count * ((w * h * fps * 0.12) / 8) * duration * 0.7;
+    stillBytes += config.output.stills ? count * w * h * 0.09 : 0;
+  }
   let mediaBytes = 0;
   for (const s of sources) {
     const p = s.probe;

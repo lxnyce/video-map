@@ -52,7 +52,7 @@ export const DEFAULT_TILE = Object.freeze({ grid: '768x432', masonry: '768x1024'
  * @property {{ type: 'plane'|'cylinder'|'sphere', arc: number, latitudeBand: number[], view: 'inside'|'outside' }} surface
  * @property {{ duration: number, fps: number, frames: number, startStrategy: 'auto'|'start', loopShort: boolean }} preview
  * @property {{ pack: 'grid'|'masonry', cellAspect: number, aspect: number, fit: 'cover'|'contain', columnWidth: number|null, gap: number,
- *   groupArrange: 'columns'|'bands', avoidSplits: boolean, groupBy: string, sortBy: string[], groupGap: number, labels: boolean }} layout
+ *   groupArrange: 'columns'|'bands', avoidSplits: boolean, groupBy: string, sortBy: string[], groupGap: number, labels: boolean, label?: string }} layout
  *   columnWidth is null when it is derived from output.canvas
  * @property {{ canvas: import('./dims.js').Size|null, cell: import('./dims.js').Size|null, tile: import('./dims.js').Size,
  *   tileCrf: number, tileCodecs: Array<'h264'|'vp9'>, background: string, stills: boolean, full: { enabled: boolean, maxHeight: number, crf: number } }} output
@@ -111,6 +111,43 @@ export function resolveConfig(scene, overrides = {}) {
     },
     build,
   };
+}
+
+/** Id of the main layout; alternates take their ids from `scene.layouts`. */
+export const MAIN_LAYOUT = 'default';
+
+/**
+ * Every arrangement to build: the main layout, then each pre-baked alternate
+ * (plan §8.4). An alternate's own layout fields win over the CLI's, because
+ * they are what makes it different; everything else is shared.
+ * @param {any} scene parsed scene.json
+ * @param {any} [overrides]
+ * @returns {Array<{ id: string, label: string, config: ResolvedConfig }>}
+ */
+export function resolveLayouts(scene, overrides = {}) {
+  const main = resolveConfig(scene, overrides);
+  const out = [{ id: MAIN_LAYOUT, label: main.layout.label ?? describeLayout(main.layout), config: main }];
+  for (const alt of scene?.layouts ?? []) {
+    const { id, ...fields } = alt;
+    const config = resolveConfig(scene, merge(overrides, { layout: fields }));
+    // A grid's cell size is shared settings, not something a masonry alternate asked for.
+    if (config.layout.pack === 'masonry') config.output.cell = null;
+    // The main layout's label names the main layout only.
+    config.layout.label = alt.label;
+    out.push({ id, label: alt.label ?? describeLayout(config.layout), config });
+  }
+  return out;
+}
+
+/**
+ * A short name for a layout from what it groups or sorts by: "By category", "By place" (tag:place), "By year" (meta.year).
+ * @param {{ groupBy: string, sortBy: string[] }} layout
+ */
+export function describeLayout({ groupBy, sortBy }) {
+  const key = groupBy && groupBy !== 'none' ? groupBy : sortBy?.[0]?.replace(/^-/, '');
+  if (!key) return 'All videos';
+  const name = key.replace(/^(tag:|meta\.)/, '');
+  return `By ${name}`;
 }
 
 /**

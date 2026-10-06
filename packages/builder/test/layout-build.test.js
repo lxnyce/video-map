@@ -1,5 +1,6 @@
-// Integration tests for milestone 3 layouts and outputs: masonry walls (nothing
-// cropped, videos split across tiles), tiles-only builds and the build cache.
+// Integration tests for layouts and outputs: masonry walls (nothing cropped,
+// videos split across tiles), tiles-only builds, the build cache (milestone 3)
+// and pre-baked alternate layouts (milestone 5).
 // Skipped when ffmpeg isn't installed.
 
 import assert from 'node:assert/strict';
@@ -203,5 +204,76 @@ describe('tiles-only builds and the cache (ffmpeg)', { skip: !hasFfmpeg && 'ffmp
     assert.ok((await cleanCache(cacheDir())) > 0);
     assert.ok(!(await exists(cacheDir())));
     assert.equal(await cleanCache(cacheDir()), null);
+  });
+});
+
+describe('alternate layouts (ffmpeg)', { skip: !hasFfmpeg && 'ffmpeg not installed' }, () => {
+  let dir;
+  let scenePath;
+  const outDir = () => path.join(dir, 'dist');
+  const places = ['Lisbon', 'Kyoto', 'Oslo'];
+  const scene = (layouts) => ({
+    categories: [{ id: 'a', label: 'Alpha' }, { id: 'b', label: 'Beta' }],
+    preview: { duration: 1, fps: 6 },
+    output: { cell: '64x36', tile: '128x72', full: { enabled: false } },
+    build: { hardware: 'off' },
+    layouts,
+    videos: Array.from({ length: 6 }, (_, i) => ({ id: `v${i}`, src: `src/v${i % 3}.mp4`, categories: [i % 2 ? 'b' : 'a'], tags: [`place:${places[i % 3]}`] })),
+  });
+
+  before(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'vmap-layouts-'));
+    await mkdir(path.join(dir, 'src'));
+    const sizes = ['320x180', '180x320', '240x240'];
+    await Promise.all(sizes.map((s, i) => ffmpeg('-f', 'lavfi', '-i', `testsrc2=s=${s}:r=12:d=1`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(dir, `src/v${i}.mp4`))));
+    scenePath = path.join(dir, 'scene.json');
+  }, { timeout: 60_000 });
+
+  after(() => rm(dir, { recursive: true, force: true }));
+
+  it('builds a pyramid per layout under layouts/<id>/, reusing clips of the same size', { timeout: 120_000 }, async () => {
+    await writeFile(scenePath, JSON.stringify(scene([
+      { id: 'place', groupBy: 'tag:place' },
+      { id: 'flow', label: 'Flow', pack: 'masonry', groupBy: 'none', columnWidth: 64 },
+    ])));
+    const { report } = await buildScene({ scenePath, jobs: 4 });
+    const out = JSON.parse(await readFile(path.join(outDir(), 'scene.json'), 'utf8'));
+
+    assert.deepEqual(out.layouts.map((l) => `${l.id}:${l.label}`), ['default:By category', 'place:By place', 'flow:Flow']);
+    assert.deepEqual(report.alternates.map((a) => `${a.id} ${a.pack}`), ['place grid', 'flow masonry']);
+    const [, place, flow] = out.layouts;
+    assert.deepEqual(place.groups.map((g) => g.label), ['Kyoto', 'Lisbon', 'Oslo']);
+    assert.equal(place.rects.length, 6);
+    assert.ok(place.cells.every(Boolean));
+    assert.equal(flow.grid, null);
+    assert.deepEqual(flow.rects.map((r) => r[2]), [64, 64, 64, 64, 64, 64], 'masonry columns');
+    assert.ok(flow.rects[1][3] > flow.rects[0][3], 'a portrait video is taller than a landscape one');
+    // Every tile each layout lists is on disk, in its own folder.
+    for (const l of [out, place, flow]) {
+      for (const level of l.pyramid.levels) {
+        for (const [x, y] of level.tiles) {
+          for (const t of [l.pyramid.video.template, l.pyramid.still.template]) {
+            const rel = t.replace('{z}', level.z).replace('{x}', x).replace('{y}', y);
+            assert.ok(await exists(path.join(outDir(), rel)), rel);
+          }
+        }
+      }
+    }
+    assert.match(flow.pyramid.video.template, /^layouts\/flow\/tiles\//);
+    // The grid alternate uses the same cell size, so its clips come from the main layout's.
+    assert.equal(report.jobs.clips.run + report.jobs.clips.cached, 18);
+    assert.ok(report.jobs.clips.cached >= 6, `clips reused: ${JSON.stringify(report.jobs.clips)}`);
+    assert.ok(report.sizes.layouts > 0);
+    assert.ok(report.estimate.tileCount > report.levels.reduce((n, l) => n + l.tiles, 0), 'the estimate counts every layout');
+  });
+
+  it('removes a layout dropped from the scene, keeping the rest', { timeout: 120_000 }, async () => {
+    await writeFile(scenePath, JSON.stringify(scene([{ id: 'place', groupBy: 'tag:place' }])));
+    const { report } = await buildScene({ scenePath, jobs: 4 });
+    const out = JSON.parse(await readFile(path.join(outDir(), 'scene.json'), 'utf8'));
+    assert.deepEqual(out.layouts.map((l) => l.id), ['default', 'place']);
+    assert.ok(!(await exists(path.join(outDir(), 'layouts/flow'))), 'layouts/flow is pruned');
+    assert.ok(await exists(path.join(outDir(), 'layouts/place/tiles/0/0/0.mp4')));
+    assert.equal(report.jobs.tiles.run, 0, 'tiles are reused');
   });
 });

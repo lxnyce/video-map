@@ -1,6 +1,6 @@
 // End-to-end: build tiny scenes with ffmpeg, serve them, and drive the viewer in
-// Chromium: a grid wall with full renditions, and a tiles-only masonry wall
-// whose videos cross tile edges. Tiles are built in H.264 and VP9 so the video
+// Chromium: a grid wall with full renditions and an alternate layout, and a
+// tiles-only masonry wall whose videos cross tile edges. Tiles are built in H.264 and VP9 so the video
 // path runs even in Chromium builds without H.264. Skipped when ffmpeg or a
 // Playwright browser is missing.
 //
@@ -48,7 +48,7 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
       const file = `src/v${i}.mp4`;
       await run('ffmpeg', ['-nostdin', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=s=320x180:r=20:d=${2 + (i % 3)}`,
         '-vf', `hue=h=${i * 25}`, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', path.join(dir, file)]);
-      videos[i] = { id: `v${i}`, src: file, title: `Video ${i}`, categories: [cats[i % 3]], tags: ['test'] };
+      videos[i] = { id: `v${i}`, src: file, title: `Video ${i}`, categories: [cats[i % 3]], tags: ['test', `place:${i % 2 ? 'Kyoto' : 'Lima'}`] };
     }));
     await writeFile(path.join(dir, 'scene.json'), JSON.stringify({
       title: 'E2E wall',
@@ -56,6 +56,7 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
       preview: { duration: 2, fps: 10 },
       output: { cell: '256x144', tile: '512x288', tileCodecs: ['h264', 'vp9'] },
       build: { hardware: 'off' },
+      layouts: [{ id: 'place', groupBy: 'tag:place' }],
       videos,
     }));
     await buildScene({ scenePath: path.join(dir, 'scene.json'), jobs: 4 });
@@ -147,19 +148,24 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
 
   it('opens a linked player window on click and closes it with Escape', async () => {
     const page = await open();
+    // The first video whose middle isn't under the title or search bar.
     const target = await page.evaluate(() => {
       const v = /** @type {any} */ (window).VideoMap.instances[0];
-      const video = v.scene.videos[0];
-      const r = v.screenRect(video);
-      return { id: video.id, x: r.x + r.w / 2, y: r.y + r.h / 2 };
+      for (const video of v.scene.videos) {
+        const r = v.screenRect(video);
+        const x = r.x + r.w / 2;
+        const y = r.y + r.h / 2;
+        if (document.elementFromPoint(x, y) === v.canvas) return { id: video.id, n: video.id.slice(1), x, y };
+      }
+      return null;
     });
     await page.mouse.click(target.x, target.y);
     await page.waitForSelector('.vm-window');
     await page.waitForTimeout(500); // open animation
-    assert.equal(await page.getAttribute('.vm-window', 'aria-label'), 'Video 0');
+    assert.equal(await page.getAttribute('.vm-window', 'aria-label'), `Video ${target.n}`);
     assert.equal(await page.getAttribute('.vm-leader', 'visibility'), 'visible');
-    assert.equal(await page.getAttribute('.vm-window video', 'src'), 'media/v0.mp4');
-    await page.waitForFunction(() => location.hash.includes('v=v0'));
+    assert.equal(await page.getAttribute('.vm-window video', 'src'), `media/${target.id}.mp4`);
+    await page.waitForFunction((id) => location.hash.includes(`v=${id}`), target.id);
 
     await page.click('[data-act="max"]');
     assert.ok(await page.$('.vm-window.vm-max'));
@@ -293,6 +299,168 @@ describe('viewer (browser)', { skip, timeout: 240_000 }, () => {
     await page.waitForSelector('.vm-window');
     const opened = await page.getAttribute('.vm-window', 'aria-label');
     assert.notEqual(opened, `Video ${back.far.slice(1)}`);
+    await page.close();
+  });
+
+  /**
+   * Render now and read the wall's color at a viewport point (the drawing buffer is
+   * only readable before the frame is shown).
+   */
+  const pixel = (page, x, y) => page.evaluate(([px, py]) => {
+    const v = /** @type {any} */ (window).VideoMap.instances[0];
+    v.render(v.state.z, v.state.tiles, performance.now());
+    const gl = v.renderer.gl;
+    const out = new Uint8Array(4);
+    const r = v.renderer.ratio;
+    gl.readPixels(Math.round(px * r), Math.round(v.canvas.height - py * r), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    return [out[0], out[1], out[2]];
+  }, [x, y]);
+  const brightness = (c) => c[0] + c[1] + c[2];
+
+  it('searches and filters: dims the rest, counts matches per group, and keeps the filter in the URL', async () => {
+    const page = await open('&videos=0');
+    const center = (id) => page.evaluate((vid) => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      const r = v.screenRect(v.byId.get(vid));
+      return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    }, id);
+    const other = await center('v2');
+    const before = brightness(await pixel(page, other.x, other.y));
+    await page.fill('.vm-search', 'video 1');
+    await page.waitForFunction(() => location.hash.includes('q=video%201'));
+    const found = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      return v.scene.videos.filter((_, i) => v.matches[i]).map((x) => x.id);
+    });
+    assert.deepEqual(found, ['v1', 'v10', 'v11', 'v12', 'v13']);
+    assert.equal(await page.textContent('.vm-search-count'), '5/14');
+    const after = brightness(await pixel(page, other.x, other.y));
+    assert.ok(after < before * 0.5, `a video that doesn't match is dimmed (${before} → ${after})`);
+    const match = await center('v1');
+    assert.ok(brightness(await pixel(page, match.x, match.y)) > after, 'a match is not');
+    const labels = await page.$$eval('.vm-label-count', (els) => els.map((e) => e.textContent));
+    assert.deepEqual(labels.sort(), ['1/4', '1/5', '3/5']);
+
+    // The list shows the same five, under their groups; a category chip narrows it.
+    await page.click('.vm-browse');
+    assert.equal(await page.locator('.vm-list .vm-row:visible').count(), 5);
+    assert.equal(await page.locator('.vm-list-group:visible').count(), 3);
+    await page.click('.vm-fchip[data-value="city"]');
+    assert.equal(await page.locator('.vm-list .vm-row:visible').count(), 3);
+    assert.equal(await page.textContent('.vm-results > span'), '3 of 14 videos');
+    await page.waitForFunction(() => location.hash.includes('cat=city'));
+    await page.click('.vm-results .vm-link-btn:has-text("Clear")');
+    assert.equal(await page.locator('.vm-list .vm-row:visible').count(), 14);
+    assert.equal(await page.inputValue('.vm-search'), '');
+    await page.waitForFunction(() => !location.hash.includes('q='));
+
+    // A filter in the URL is applied on load.
+    const linked = await open('&videos=0#tag=place%3AKyoto&q=video');
+    assert.equal(await linked.textContent('.vm-search-count'), '7/14');
+    await linked.close();
+    await page.close();
+  });
+
+  it('opens a video from the list, and flies to a group from its label', async () => {
+    const page = await open('&videos=0');
+    await page.click('.vm-browse');
+    await page.click('.vm-row[data-video="4"]');
+    await page.waitForSelector('.vm-window');
+    assert.equal(await page.getAttribute('.vm-window', 'aria-label'), 'Video 4');
+    await page.waitForTimeout(900); // camera flight
+    const placed = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      const r = v.screenRect(v.byId.get('v4'));
+      const panel = document.querySelector('.vm-panel').getBoundingClientRect();
+      const win = document.querySelector('.vm-window').getBoundingClientRect();
+      return { cx: r.x + r.w / 2, cy: r.y + r.h / 2, panelRight: panel.right, win: { x: win.left, y: win.top, r: win.right, b: win.bottom } };
+    });
+    assert.ok(placed.cx > placed.panelRight, 'the video is clear of the panel');
+    const inWin = placed.cx > placed.win.x && placed.cx < placed.win.r && placed.cy > placed.win.y && placed.cy < placed.win.b;
+    assert.ok(!inWin, 'and of its window');
+    await page.keyboard.press('Escape');
+    await page.click('.vm-browse');
+
+    await page.click('.vm-label:has-text("Forest")');
+    await page.waitForTimeout(900);
+    const group = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      const g = v.scene.groups.find((x) => x.label === 'Forest');
+      return { g: v.wallToScreen(g), vw: v.camera.vw, vh: v.camera.vh };
+    });
+    assert.ok(group.g.x >= -1 && group.g.y >= -1 && group.g.x + group.g.w <= group.vw + 1 && group.g.y + group.g.h <= group.vh + 1, 'the whole group is in view');
+    assert.ok(group.g.w > group.vw * 0.5 || group.g.h > group.vh * 0.5, 'and fills the screen');
+    await page.close();
+  });
+
+  it('switches to a pre-baked layout and back, with the layout in the URL', async () => {
+    const page = await open('#layout=place');
+    await page.waitForFunction(() => /** @type {any} */ (window).VideoMap.instances[0]?.pool.slots.some((s) => s.state === 'playing'), null, { timeout: 15_000 });
+    const s = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      return { wall: v.wall.id, groups: v.scene.groups.map((g) => g.label), srcs: v.pool.slots.map((x) => x.el.getAttribute('src')).filter(Boolean) };
+    });
+    assert.equal(s.wall, 'place');
+    assert.deepEqual(s.groups, ['Kyoto', 'Lima']);
+    assert.ok(s.srcs.length && s.srcs.every((u) => u.includes('/layouts/place/tiles/')), s.srcs.join(' '));
+    assert.equal(await page.locator('.vm-label').count(), 2);
+    assert.match(await page.textContent('.vm-titlebar p'), /By place/);
+
+    // Clicking a video opens the right one in this layout.
+    const t = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      const r = v.screenRect(v.byId.get('v3'));
+      return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    });
+    await page.mouse.click(t.x, t.y);
+    await page.waitForSelector('.vm-window');
+    assert.equal(await page.getAttribute('.vm-window', 'aria-label'), 'Video 3');
+
+    await page.click('.vm-browse');
+    await page.click('.vm-seg-btn[data-layout="default"]');
+    await page.waitForFunction(() => !location.hash.includes('layout='));
+    assert.equal(await page.locator('.vm-label').count(), 3);
+    const back = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      const p = v.camera.project ? null : v.camera.contentToScreen(v.byId.get('v3').rect.x, v.byId.get('v3').rect.y);
+      return { wall: v.wall.id, open: v.players.focused?.video.id, p, vw: v.camera.vw, vh: v.camera.vh };
+    });
+    assert.equal(back.wall, 'default');
+    assert.equal(back.open, 'v3', 'the window stays open');
+    assert.ok(back.p.x > -50 && back.p.x < back.vw && back.p.y > -50 && back.p.y < back.vh, 'and its video is still in view');
+    await page.close();
+  });
+
+  it('shows a minimap once zoomed in, and moves the camera from it', async () => {
+    const page = await open('&videos=0');
+    assert.ok(await page.isHidden('.vm-minimap'), 'not while the whole wall is in view');
+    await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      v.camera.set({ x: 200, y: 200, zoom: 2 });
+      v.moved = true;
+    });
+    await page.waitForSelector('.vm-minimap:visible');
+    const box = await page.locator('.vm-minimap').boundingBox();
+    await page.mouse.click(box.x + box.width - 3, box.y + box.height - 3);
+    await page.waitForTimeout(500);
+    const cam = await page.evaluate(() => {
+      const v = /** @type {any} */ (window).VideoMap.instances[0];
+      return { x: v.camera.x, y: v.camera.y, w: v.scene.content.width, h: v.scene.content.height };
+    });
+    assert.ok(cam.x > cam.w * 0.6 && cam.y > cam.h * 0.6, `camera moved toward the bottom right (${cam.x}, ${cam.y})`);
+    await page.close();
+  });
+
+  it('browses full screen on a phone, and opens the chosen video in a sheet', async () => {
+    const page = await open('&videos=0', { width: 390, height: 844 }, { deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    assert.ok(await page.isHidden('.vm-search'), 'just a button until opened');
+    await page.tap('.vm-browse');
+    const side = await page.locator('.vm-side').boundingBox();
+    assert.deepEqual([side.x, side.y, side.width, side.height], [0, 0, 390, 844]);
+    await page.fill('.vm-search', 'video 7');
+    await page.tap('.vm-row[data-video="7"]');
+    await page.waitForSelector('.vm-window.vm-sheet');
+    assert.ok(await page.isHidden('.vm-panel'), 'the panel closes');
     await page.close();
   });
 

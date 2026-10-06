@@ -1,6 +1,6 @@
 export { parseSize, parseRatio, formatSize, floorEven, roundEven } from './dims.js';
 export { h264Level, vp9Level, tileCodec, TILE_CODECS } from './codec.js';
-export { DEFAULTS, DEFAULT_CELL, DEFAULT_COLUMN_WIDTH, DEFAULT_TILE, resolveConfig } from './config.js';
+export { DEFAULTS, DEFAULT_CELL, DEFAULT_COLUMN_WIDTH, DEFAULT_TILE, MAIN_LAYOUT, describeLayout, resolveConfig, resolveLayouts } from './config.js';
 export { computeLayout, groupVideos, blockShape } from './layout.js';
 export { computeMasonry, masonryHeight, dealColumns } from './masonry.js';
 export { planWall } from './wall.js';

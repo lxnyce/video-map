@@ -4,13 +4,16 @@
 import { surfaceGeometry } from '@videomap/core/surface';
 import { Camera } from './camera.js';
 import { detectTier, gpuName } from './device.js';
+import { Discover } from './discover.js';
 import { formatHash, parseHash } from './hash.js';
 import { Input } from './input.js';
 import { byDistance, chooseLevel, occupancy } from './lod.js';
+import { Minimap } from './minimap.js';
 import { Players } from './player.js';
-import { createRectIndex, normalizeScene, sharedTiles } from './rects.js';
+import { applyWall, createRectIndex, groupOf, normalizeScene, sharedTiles, wallsOf } from './rects.js';
 import { Renderer, hexToRgb } from './renderer.js';
 import { VideoPool } from './scheduler.js';
+import { NO_FILTER, createSearch, isFiltering } from './search.js';
 import { StillCache } from './stills.js';
 import { SurfaceCamera } from './surface-camera.js';
 
@@ -74,20 +77,21 @@ export class Viewer {
     this.base = sceneUrl;
     this.params = new URLSearchParams(location.search);
     this.debug = this.params.has('debug');
-    const p = scene.pyramid;
-    this.levels = p.levels;
-    this.tile = p.tile;
-    this.occupied = occupancy(p.levels);
-    // Every video is a rectangle on the wall, whatever the packing (grid or masonry).
-    this.index = createRectIndex(/** @type {any[]} */ (scene.videos), scene.content.width, scene.content.height);
-    // Tiles that share a video (masonry) must stay tightly in sync, or the video shows a seam.
-    this.shared = sharedTiles(p.levels, p.tile, scene.videos.map((v) => v.rect));
     this.byId = new Map(scene.videos.map((v) => [v.id, v]));
+    this.indexOf = new Map(scene.videos.map((v, i) => [v, i]));
     this.catLabel = new Map((scene.categories ?? []).map((c) => [c.id, c.label ?? c.id]));
     this.bg = hexToRgb(scene.background ?? '#101318');
     this.outside = this.bg.map((c) => c * 0.55);
-    // Null for the flat wall; otherwise how the wall wraps a cylinder or sphere.
-    this.geo = surfaceGeometry(scene.surface, scene.content.width, scene.content.height);
+    // The main arrangement and any pre-baked alternates; the URL can ask for one.
+    this.walls = wallsOf(scene);
+    const asked = parseHash(location.hash);
+    const firstWall = this.walls.find((w) => w.id === asked.layout) ?? this.walls[0];
+    // Search and filters: matches are 1 per video, or null when nothing is filtered.
+    this.search = createSearch(scene.videos, (id) => this.catLabel.get(id) ?? id);
+    /** @type {import('./search.js').Filter} */
+    this.filter = { ...NO_FILTER };
+    /** @type {Uint8Array|null} */
+    this.matches = null;
 
     this.buildDom();
     this.renderer = new Renderer(this.canvas);
@@ -96,11 +100,10 @@ export class Viewer {
     this.adapt = this.params.get('adapt') !== '0';
     this.downgrades = 0;
 
-    // Tile video source: the first one this browser can play.
-    const probe = document.createElement('video');
-    const sources = [p.video, ...(p.video.alternates ?? [])];
-    this.videoSource = sources.find((s) => probe.canPlayType(s.mime)) ?? null;
-    this.stillSource = p.still;
+    // Tile video source: the first one this browser can play (chosen per layout, since tile sizes may differ).
+    this.probe = document.createElement('video');
+    applyWall(scene, firstWall);
+    this.pickSources();
 
     this.t0 = performance.now();
     this.duration = scene.preview.duration;
@@ -121,7 +124,8 @@ export class Viewer {
     this.userToggled = false;
     if (!this.videoSource && !this.stillSource) throw new Error('This browser cannot play the tile videos in this scene.');
 
-    this.camera = this.geo ? new SurfaceCamera(this.geo) : new Camera(scene.content.width, scene.content.height);
+    this.state = { z: 0, ideal: 0, tiles: /** @type {Array<[number, number]>} */ ([]), wantSig: '', appliedSig: '', wantSince: 0 };
+    this.useWall(firstWall);
     this.players = new Players(root, {
       cellRect: (v) => this.screenRect(v),
       locate: (v, rect) => this.locate(v, rect),
@@ -129,12 +133,13 @@ export class Viewer {
       changed: () => {
         this.dirty = true;
         this.writeHash();
+        this.updateMinimap();
       },
       labelFor: (id) => this.catLabel.get(id) ?? id,
+      filterBy: (kind, value) => this.filterBy(kind, value),
     });
     this.input = new Input(this.canvas, this.inputHandlers());
 
-    this.state = { z: 0, ideal: 0, tiles: /** @type {Array<[number, number]>} */ ([]), wantSig: '', appliedSig: '', wantSince: 0 };
     this.hover = null;
     this.dirty = true;
     this.frames = [];
@@ -166,30 +171,27 @@ export class Viewer {
     this.canvas = el('canvas', 'vm-canvas');
     this.canvas.tabIndex = 0;
     this.canvas.setAttribute('role', 'application');
-    const shape = this.geo?.type ?? 'wall';
-    const drag = !this.geo ? 'Drag to pan' : this.geo.inside ? 'Drag to look around' : 'Drag to turn it';
-    this.canvas.setAttribute('aria-label', `${s.title}: ${shape} of ${s.videos.length} videos. ${drag}, scroll or pinch to zoom, click a video to open it. Arrow keys pan, plus and minus zoom, 0 shows everything.`);
     this.videoHost = el('div', 'vm-video-host');
     this.videoHost.setAttribute('aria-hidden', 'true');
+    // Group labels on the wall; clicking one flies to its group. The list view is their accessible counterpart.
     this.labelLayer = el('div', 'vm-labels');
     this.labelLayer.setAttribute('aria-hidden', 'true');
-    this.labels = (s.labels ? s.groups : []).map((g) => {
-      const l = el('div', 'vm-label');
-      l.textContent = g.label;
-      const count = el('span', 'vm-label-count');
-      count.textContent = String(g.count);
-      l.append(count);
-      if (g.color) l.style.setProperty('--group-color', g.color);
-      this.labelLayer.append(l);
-      return { g, el: l };
+    this.labelLayer.addEventListener('click', (e) => {
+      const b = /** @type {HTMLElement} */ (e.target).closest('.vm-label');
+      if (b) this.flyToGroup(Number(/** @type {HTMLElement} */ (b).dataset.group));
     });
+    /** @type {Array<{ g: any, el: HTMLElement, count: HTMLElement }>} */
+    this.labels = [];
 
+    // The left column: title, search bar, and the browse panel under it.
+    const side = el('div', 'vm-side');
+    this.side = side;
     const title = el('header', 'vm-titlebar');
     const h1 = el('h1');
     h1.textContent = s.title;
-    const sub = el('p');
-    sub.textContent = `${s.videos.length} videos${s.groups.length > 1 ? ` · ${s.groups.length} groups` : ''}`;
-    title.append(h1, sub);
+    this.subtitle = el('p');
+    title.append(h1, this.subtitle);
+    side.append(title);
 
     const controls = el('div', 'vm-controls');
     const button = (icon, label, fn) => {
@@ -244,9 +246,197 @@ export class Viewer {
     this.hud = el('pre', 'vm-hud');
     this.hud.hidden = !this.debug;
 
-    root.append(this.canvas, this.videoHost, this.labelLayer, title, controls, this.banner, this.tooltip, this.loading, this.hud);
+    root.append(this.canvas, this.videoHost, this.labelLayer, side, controls, this.banner, this.tooltip, this.loading, this.hud);
+    this.discover = new Discover(side, s, this.walls.map((w) => ({ id: w.id, label: w.label })), {
+      filter: (f) => this.setFilter(f),
+      select: (v, from) => this.openFrom(v, from),
+      flyToGroup: (i) => this.flyToGroup(i),
+      showMatches: () => this.showMatches(),
+      setLayout: (id) => this.setLayout(id),
+      toggled: () => this.updateMinimap(),
+      labelFor: (id) => this.catLabel.get(id) ?? id,
+      resolve: (p) => new URL(p, this.base).href,
+    });
+    this.minimap = new Minimap(root, {
+      moveTo: (x, y, animate) => {
+        const to = { x, y, zoom: this.camera.zoom };
+        if (animate) this.camera.flyTo(to, performance.now(), 250);
+        else {
+          this.camera.stop();
+          this.camera.set(to);
+          this.moved = true;
+        }
+      },
+    });
     // Any gesture is a chance to start videos that autoplay refused.
     root.addEventListener('pointerup', () => { if (this.pool?.blocked) this.pool.unlock(); });
+    // "/" jumps to the search box from anywhere in the viewer.
+    root.addEventListener('keydown', (e) => {
+      const t = /** @type {HTMLElement} */ (e.target);
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && !t.isContentEditable) {
+        e.preventDefault();
+        this.discover.focusSearch();
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Layouts
+
+  /** The first tile codec this browser can play in the current layout, and its stills. */
+  pickSources() {
+    const p = this.scene.pyramid;
+    const sources = [p.video, ...(p.video.alternates ?? [])];
+    this.videoSource = sources.find((x) => this.probe.canPlayType(x.mime)) ?? null;
+    this.stillSource = p.still;
+  }
+
+  /**
+   * Make an arrangement current: its pyramid, rectangles, labels, camera and
+   * minimap. Tile keys carry the layout, so the pool and still cache simply move
+   * on to the new tiles (and the old ones are still there on the way back).
+   * @param {import('./rects.js').Wall} wall
+   */
+  useWall(wall) {
+    const s = this.scene;
+    this.wall = wall;
+    applyWall(s, wall);
+    this.keyPrefix = wall === this.walls[0] ? '' : `${wall.id}:`;
+    const p = s.pyramid;
+    this.levels = p.levels;
+    this.tile = p.tile;
+    this.occupied = occupancy(p.levels);
+    // Every video is a rectangle on the wall, whatever the packing (grid or masonry).
+    this.index = createRectIndex(/** @type {any[]} */ (s.videos), s.content.width, s.content.height);
+    // Tiles that share a video (masonry) must stay tightly in sync, or the video shows a seam.
+    this.shared = sharedTiles(p.levels, p.tile, s.videos.map((v) => v.rect));
+    this.groupIndex = groupOf(s.videos, s.groups);
+    this.pickSources();
+    // Null for the flat wall; otherwise how the wall wraps a cylinder or sphere.
+    this.geo = surfaceGeometry(s.surface, s.content.width, s.content.height);
+    const old = this.camera;
+    this.camera = this.geo ? new SurfaceCamera(this.geo) : new Camera(s.content.width, s.content.height);
+    if (old) this.camera.setViewport(old.vw, old.vh);
+    Object.assign(this.state, { wantSig: '', appliedSig: '', wantSince: 0 });
+    this.hover = null;
+
+    const shape = this.geo?.type ?? 'wall';
+    const drag = !this.geo ? 'Drag to pan' : this.geo.inside ? 'Drag to look around' : 'Drag to turn it';
+    this.canvas.setAttribute('aria-label', `${s.title}: ${shape} of ${s.videos.length} videos. ${drag}, scroll or pinch to zoom, click a video to open it. Arrow keys pan, plus and minus zoom, 0 shows everything, slash searches.`);
+    const groups = s.groups.length;
+    this.subtitle.textContent = `${s.videos.length} videos${groups > 1 ? ` · ${groups} groups` : ''}${this.walls.length > 1 ? ` · ${wall.label}` : ''}`;
+
+    this.labels = (s.labels ? s.groups : []).map((g, i) => {
+      const l = el('button', 'vm-label');
+      l.type = 'button';
+      l.tabIndex = -1;
+      l.dataset.group = String(i);
+      l.title = `Show ${g.label}`;
+      l.append(g.label);
+      const count = el('span', 'vm-label-count');
+      l.append(count);
+      if (g.color) l.style.setProperty('--group-color', g.color);
+      return { g, el: l, count };
+    });
+    this.labelLayer.replaceChildren(...this.labels.map((l) => l.el));
+    this.updateLabelCounts();
+    this.lastViewKey = '';
+
+    this.discover.setWall(wall.id, this.groupIndex);
+    if (!this.geo) {
+      const s0 = p.levels[0].scale;
+      this.minimap.setWall({
+        width: s.content.width,
+        height: s.content.height,
+        image: p.still ? this.url(p.still.template, 0, 0, 0) : null,
+        imageRect: { x: 0, y: 0, w: s.content.width * s0, h: s.content.height * s0 },
+        rects: s.videos.map((v) => v.rect),
+        background: s.background ?? '#101318',
+      });
+    }
+    this.dirty = true;
+  }
+
+  /** Switch to another pre-baked arrangement, keeping the focused video in view. @param {string} id */
+  setLayout(id) {
+    const wall = this.walls.find((w) => w.id === id);
+    if (!wall || wall === this.wall) return;
+    const focused = this.players.focused?.video;
+    this.useWall(wall);
+    this.camera.set(focused?.rect ? this.camera.viewForRect(focused.rect, { fraction: 0.4 }) : this.camera.homeView());
+    if (this.canvas.animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.canvas.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 350, easing: 'ease-out' });
+    }
+    this.writeHash();
+  }
+
+  // -------------------------------------------------------------------------
+  // Search and filters
+
+  /**
+   * Apply a filter: dim the videos that don't match, here, in the list and on the minimap.
+   * @param {import('./search.js').Filter} f
+   */
+  setFilter(f) {
+    const next = { q: f.q ?? '', cats: [...new Set(f.cats ?? [])], tags: [...new Set(f.tags ?? [])] };
+    this.filter = next;
+    this.matches = this.search.match(next);
+    this.discover.update(next, this.matches);
+    this.minimap.setMatches(this.matches);
+    this.updateLabelCounts();
+    this.dirty = true;
+    this.writeHash();
+  }
+
+  /** Filter by a category or tag chip clicked in a window. @param {'cat'|'tag'} kind @param {string} value */
+  filterBy(kind, value) {
+    const key = kind === 'cat' ? 'cats' : 'tags';
+    if (!this.filter[key].includes(value)) this.setFilter({ ...this.filter, [key]: [...this.filter[key], value] });
+    if (!this.players.mobile) this.discover.open(true);
+  }
+
+  /** Fit the matching videos in the part of the screen nothing covers. */
+  showMatches() {
+    const m = this.matches;
+    if (!m) return;
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    this.scene.videos.forEach((v, i) => {
+      if (!m[i] || !v.rect) return;
+      x0 = Math.min(x0, v.rect.x);
+      y0 = Math.min(y0, v.rect.y);
+      x1 = Math.max(x1, v.rect.x + v.rect.w);
+      y1 = Math.max(y1, v.rect.y + v.rect.h);
+    });
+    if (x0 > x1) return;
+    this.camera.flyTo(this.viewInRegion({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, this.freeRegion(null), 0.9), performance.now(), 700);
+  }
+
+  /** @param {number} i index into the scene's groups */
+  flyToGroup(i) {
+    const g = this.scene.groups[i];
+    if (g) this.camera.flyTo(this.viewInRegion(g, this.freeRegion(null), 0.92), performance.now(), 700);
+  }
+
+  /** Label counts: the group's size, or how many of it match while filtering. */
+  updateLabelCounts() {
+    const m = this.matches;
+    const found = new Int32Array(this.labels.length);
+    if (m) this.groupIndex.forEach((gi, i) => { if (gi >= 0 && gi < found.length && m[i]) found[gi]++; });
+    this.labels.forEach(({ g, el: label, count }, gi) => {
+      count.textContent = m ? `${found[gi]}/${g.count}` : String(g.count);
+      label.classList.toggle('vm-label-none', Boolean(m) && !found[gi]);
+    });
+  }
+
+  /** Open a video chosen in the list: the window grows from its row, and the camera brings the video into view. */
+  openFrom(v, from) {
+    if (!v.rect) return;
+    this.hideTooltip();
+    const win = this.players.open(v, from);
+    this.locate(v, win.box());
   }
 
   resize() {
@@ -386,28 +576,54 @@ export class Viewer {
    * @param {{ x: number, y: number, w: number, h: number } | null} windowRect viewer coordinates
    */
   locate(v, windowRect) {
-    const cam = this.camera;
-    const vw = cam.vw;
-    const vh = cam.vh;
+    this.camera.flyTo(this.viewInRegion(v.rect, this.freeRegion(windowRect), 0.55), performance.now(), 700);
+  }
+
+  /**
+   * The biggest part of the viewport that the browse panel and a window leave free.
+   * @param {{ x: number, y: number, w: number, h: number } | null} windowRect viewer coordinates
+   */
+  freeRegion(windowRect) {
+    const vw = this.camera.vw;
+    const vh = this.camera.vh;
     let region = { x: 0, y: 0, w: vw, h: vh };
+    // The open panel runs down the left side.
+    const panel = this.discover.cover();
+    if (panel && vw - (panel.x + panel.w) > 160) {
+      const x = panel.x + panel.w + 8;
+      region = { x, y: 0, w: vw - x, h: vh };
+    }
     if (windowRect) {
-      const wx0 = windowRect.x;
-      const wy0 = windowRect.y;
-      const wx1 = wx0 + windowRect.w;
-      const wy1 = wy0 + windowRect.h;
+      const r = region;
+      const wx0 = Math.max(r.x, windowRect.x);
+      const wy0 = Math.max(r.y, windowRect.y);
+      const wx1 = Math.min(r.x + r.w, windowRect.x + windowRect.w);
+      const wy1 = Math.min(r.y + r.h, windowRect.y + windowRect.h);
       const options = [
-        { x: 0, y: 0, w: wx0, h: vh },
-        { x: wx1, y: 0, w: vw - wx1, h: vh },
-        { x: 0, y: 0, w: vw, h: wy0 },
-        { x: 0, y: wy1, w: vw, h: vh - wy1 },
+        { x: r.x, y: r.y, w: wx0 - r.x, h: r.h },
+        { x: wx1, y: r.y, w: r.x + r.w - wx1, h: r.h },
+        { x: r.x, y: r.y, w: r.w, h: wy0 - r.y },
+        { x: r.x, y: wy1, w: r.w, h: r.y + r.h - wy1 },
       ].filter((o) => o.w > 80 && o.h > 80);
       if (options.length) region = options.sort((a, b) => b.w * b.h - a.w * a.h)[0];
     }
-    const cell = v.rect;
-    const zoom = Math.min(cam.maxZoom, Math.max(cam.minZoom, Math.min((region.w * 0.55) / cell.w, (region.h * 0.55) / cell.h)));
-    const cx = cell.x + cell.w / 2 - (region.x + region.w / 2 - vw / 2) / zoom;
-    const cy = cell.y + cell.h / 2 - (region.y + region.h / 2 - vh / 2) / zoom;
-    cam.flyTo({ x: cx, y: cy, zoom }, performance.now(), 700);
+    return region;
+  }
+
+  /**
+   * The camera view that shows a wall rectangle at `fraction` of a screen region, centered in it.
+   * @param {{ x: number, y: number, w: number, h: number }} rect wall pixels
+   * @param {{ x: number, y: number, w: number, h: number }} region viewer coordinates
+   * @param {number} fraction
+   */
+  viewInRegion(rect, region, fraction) {
+    const cam = this.camera;
+    const zoom = Math.min(cam.maxZoom, Math.max(cam.minZoom, Math.min((region.w * fraction) / rect.w, (region.h * fraction) / rect.h)));
+    return {
+      x: rect.x + rect.w / 2 - (region.x + region.w / 2 - cam.vw / 2) / zoom,
+      y: rect.y + rect.h / 2 - (region.y + region.h / 2 - cam.vh / 2) / zoom,
+      zoom,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -450,6 +666,10 @@ export class Viewer {
   updateLabels() {
     const vw = this.camera.vw;
     const vh = this.camera.vh;
+    // Labels keep clear of the title and search bar in the top-left corner.
+    const bar = this.discover.bar;
+    const sideRight = this.side.offsetLeft + this.side.offsetWidth;
+    const sideBottom = this.side.offsetTop + bar.offsetTop + bar.offsetHeight;
     for (const { g, el: label } of this.labels) {
       const p = this.wallToScreen(g);
       const { w, h } = p;
@@ -458,18 +678,35 @@ export class Viewer {
       if (visible) {
         // Stick to the top-left of the visible part of the group.
         const x = Math.min(Math.max(p.x, 8), p.x + w - label.offsetWidth - 4);
-        const y = Math.min(Math.max(p.y, 64), p.y + h - label.offsetHeight - 4);
+        const y = Math.min(Math.max(p.y, x < sideRight ? sideBottom : 8), p.y + h - label.offsetHeight - 4);
         label.style.transform = `translate(${Math.round(x + 6)}px, ${Math.round(y + 6)}px)`;
       }
     }
+  }
+
+  /** The minimap shows on the flat wall while it's bigger than the screen, unless something covers its corner. */
+  updateMinimap() {
+    const cam = this.camera;
+    if (this.geo || !this.minimap) return;
+    const r = cam.visibleRect();
+    const W = this.scene.content.width;
+    const H = this.scene.content.height;
+    const all = r.x0 <= 1 && r.y0 <= 1 && r.x1 >= W - 1 && r.y1 >= H - 1;
+    const covered = this.players?.mobile && (this.players.windows.length > 0 || this.discover.isOpen);
+    this.minimap.resize();
+    this.minimap.update(all || covered ? null : r);
   }
 
   // -------------------------------------------------------------------------
   // Deep links
 
   applyHash(fromEvent) {
-    const { v, cam } = parseHash(location.hash);
+    const { v, cam, layout, q, cats, tags } = parseHash(location.hash);
     const now = performance.now();
+    const wall = this.walls.find((w) => w.id === layout) ?? this.walls[0];
+    if (wall !== this.wall) this.setLayout(wall.id);
+    const f = this.filter;
+    if (q !== f.q || cats.join(',') !== f.cats.join(',') || tags.join(',') !== f.tags.join(',')) this.setFilter({ q, cats, tags });
     if (cam) {
       if (fromEvent) this.camera.flyTo(cam, now);
       else this.camera.set(cam);
@@ -485,7 +722,12 @@ export class Viewer {
   writeHash() {
     clearTimeout(this.hashTimer);
     this.hashTimer = window.setTimeout(() => {
-      const hash = formatHash({ cam: this.camera.view, v: this.players.focused?.video.id ?? null });
+      const hash = formatHash({
+        layout: this.wall === this.walls[0] ? null : this.wall.id,
+        cam: this.camera.view,
+        v: this.players.focused?.video.id ?? null,
+        ...this.filter,
+      });
       if (hash !== location.hash) history.replaceState(null, '', hash || location.pathname + location.search);
     }, 350);
   }
@@ -537,6 +779,7 @@ export class Viewer {
     if (viewKey !== this.lastViewKey) {
       this.lastViewKey = viewKey;
       this.updateLabels();
+      this.updateMinimap();
     }
     if (this.players.windows.length) this.players.frame();
     this.updateBanner();
@@ -547,9 +790,10 @@ export class Viewer {
   schedule(z, tiles, now) {
     if (!this.videoSource) return;
     const s = this.state;
-    const wanted = tiles.map(([x, y]) => ({ key: `${z}/${x}/${y}`, url: this.url(this.videoSource.template, z, x, y), tight: this.shared[z].has(`${x},${y}`) }));
+    const k = this.keyPrefix;
+    const wanted = tiles.map(([x, y]) => ({ key: `${k}${z}/${x}/${y}`, url: this.url(this.videoSource.template, z, x, y), tight: this.shared[z].has(`${x},${y}`) }));
     // A spare decoder plays the overview, which stands in anywhere a finer tile is still loading.
-    if (z > 0 && wanted.length < this.pool.size) wanted.push({ key: '0/0/0', url: this.url(this.videoSource.template, 0, 0, 0) });
+    if (z > 0 && wanted.length < this.pool.size) wanted.push({ key: `${k}0/0/0`, url: this.url(this.videoSource.template, 0, 0, 0) });
     const sig = wanted.map((w) => w.key).join('|');
     if (sig !== s.wantSig) {
       s.wantSig = sig;
@@ -565,8 +809,9 @@ export class Viewer {
   wantStills(z, tiles, now) {
     if (!this.stillSource) return;
     const t = this.stillSource.template;
-    this.stills.want('0/0/0', this.url(t, 0, 0, 0), 0, now, true);
-    tiles.forEach(([x, y], i) => this.stills.want(`${z}/${x}/${y}`, this.url(t, z, x, y), 1 + i, now));
+    const k = this.keyPrefix;
+    this.stills.want(`${k}0/0/0`, this.url(t, 0, 0, 0), 0, now, true);
+    tiles.forEach(([x, y], i) => this.stills.want(`${k}${z}/${x}/${y}`, this.url(t, z, x, y), 1 + i, now));
     this.stills.pump(now);
   }
 
@@ -575,7 +820,7 @@ export class Viewer {
   }
 
   texture(z, x, y) {
-    const key = `${z}/${x}/${y}`;
+    const key = `${this.keyPrefix}${z}/${x}/${y}`;
     return this.pool.texture(key) ?? this.stills.texture(key);
   }
 
@@ -610,6 +855,7 @@ export class Viewer {
       this.loading.classList.add('vm-done');
     }
     this.drawDividers();
+    if (this.matches) this.drawDimming();
 
     if (this.hover && !this.players.videos.includes(this.hover)) this.outline(this.hover.rect, [1, 1, 1, 0.55], 1.5);
     const pulse = 0.75 + 0.25 * Math.sin(now / 260);
@@ -666,6 +912,28 @@ export class Viewer {
     const x1 = Math.min(W, r.x + r.w);
     const y1 = Math.min(H, r.y + r.h);
     return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  }
+
+  /**
+   * Videos the filter leaves out are covered with the background color, so the
+   * matches stand out. One quad per video in view, for any packing (plan §8.4).
+   */
+  drawDimming() {
+    const cam = this.camera;
+    const regions = cam instanceof SurfaceCamera ? cam.visibleBounds() : [cam.visibleRect()];
+    const color = [...this.bg, 0.8];
+    // Filtered tiles bleed a texel past each video; cover that too (about a screen pixel).
+    const pad = 1.25 / cam.zoom;
+    /** @type {Set<any>} */
+    const done = new Set();
+    for (const r of regions) {
+      for (const v of this.index.query(r.x0, r.y0, r.x1, r.y1)) {
+        if (done.has(v)) continue;
+        done.add(v);
+        const { x, y, w, h } = v.rect;
+        if (!this.matches[this.indexOf.get(v)]) this.fill({ x: x - pad, y: y - pad, w: w + pad * 2, h: h + pad * 2 }, color);
+      }
+    }
   }
 
   /** Masonry column groups sit edge to edge, so a thin line marks where one group ends and the next begins. */

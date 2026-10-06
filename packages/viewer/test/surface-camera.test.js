@@ -154,3 +154,26 @@ describe('SurfaceCamera', () => {
     }
   });
 });
+
+describe('SurfaceCamera visible bounds', () => {
+  it('cover every wall point on screen, and split at the seam of a wrapping wall', () => {
+    for (const spec of SURFACES) {
+      const c = make(spec);
+      for (const x of [3000, 150, 5900]) {
+        c.set({ x, y: 700, zoom: c.zoom * 1.5 });
+        const regions = c.visibleBounds();
+        const name = `${spec.type} ${spec.view}${spec.arc ? ` ${spec.arc}°` : ''} at x=${x}`;
+        assert.ok(regions.length >= 1 && regions.length <= 2, name);
+        if (c.geo.wrap) for (const r of regions) assert.ok(r.x0 >= 0 && r.x1 <= 6000 + 1e-6, `${name}: inside the wall`);
+        for (let sy = 0; sy <= 720; sy += 60) {
+          for (let sx = 0; sx <= 1280; sx += 64) {
+            const p = c.screenToContent(sx, sy);
+            if (!p) continue;
+            assert.ok(regions.some((r) => p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1), `${name}: (${sx}, ${sy}) shows (${p.x.toFixed(0)}, ${p.y.toFixed(0)})`);
+          }
+        }
+        if (c.geo.wrap && spec.view === 'inside' && x === 150) assert.equal(regions.length, 2, `${name}: the view crosses the seam`);
+      }
+    }
+  });
+});

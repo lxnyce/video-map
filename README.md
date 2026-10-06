@@ -8,7 +8,8 @@ Play hundreds of videos at the same time on a flat, cylindrical or spherical sur
 - Milestone 2 (WebGL viewer for the flat wall) is built: level-of-detail video tiles, pan and zoom, linked floating player windows and deep links.
 - Milestone 3 (layout and build revisions) is built: whole frames by default, masonry packing, hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox, VA-API) with a libx264 fallback, and tiles-only builds.
 - Milestone 4 (curved surfaces) is built: walls wrapped inside or around a cylinder or a sphere, with controls, picking and player windows that follow the curve.
-- Next is milestone 5: search, filtering, a list view and a minimap.
+- Milestone 5 (discovery) is built: search, category and tag filters that dim the rest of the wall, a list view, clickable group labels, a minimap, and pre-baked alternate layouts the viewer can switch between.
+- Next is milestone 6: the Studio (uploads, metadata editing and builds in the browser).
 
 ## Quick start
 

@@ -21,6 +21,7 @@ const ICONS = {
  * @property {() => number} masterTime seconds into the preview loop
  * @property {() => void} changed  windows opened, closed or focused
  * @property {(video: any) => string} labelFor  category label lookup
+ * @property {(kind: 'cat'|'tag', value: string) => void} [filterBy]  a category or tag chip was clicked: filter the wall by it
  */
 
 export class Players {
@@ -175,7 +176,7 @@ class PlayerWindow {
       this.videoEl = v;
     }
 
-    this.info = buildInfo(video, mgr.host.labelFor);
+    this.info = buildInfo(video, mgr.host.labelFor, mgr.host.filterBy);
     // An info card shows the details right away; a player keeps them behind the button.
     this.info.hidden = !card;
     const grip = el('div', 'vm-window-grip');
@@ -409,8 +410,11 @@ class PlayerWindow {
   }
 }
 
-/** Details panel: description, categories and tags, credits, links and free-form metadata. */
-function buildInfo(video, labelFor) {
+/**
+ * Details panel: description, categories and tags, credits, links and free-form metadata.
+ * Category and tag chips filter the wall when `filterBy` is given.
+ */
+function buildInfo(video, labelFor, filterBy) {
   const info = el('div', 'vm-window-info');
   if (video.description) {
     const p = el('p', 'vm-desc');
@@ -418,8 +422,18 @@ function buildInfo(video, labelFor) {
     info.append(p);
   }
   const chips = el('div', 'vm-chips');
-  for (const c of video.categories ?? []) chips.append(chip(labelFor(c), 'vm-chip vm-chip-cat'));
-  for (const t of video.tags ?? []) chips.append(chip(t, 'vm-chip'));
+  const chip = (text, cls, kind, value) => {
+    const c = el(filterBy ? 'button' : 'span', cls);
+    c.textContent = text;
+    if (filterBy) {
+      /** @type {HTMLButtonElement} */ (c).type = 'button';
+      c.title = `Show only videos ${kind === 'cat' ? 'in' : 'tagged'} ${text}`;
+      c.addEventListener('click', () => filterBy(kind, value));
+    }
+    return c;
+  };
+  for (const c of video.categories ?? []) chips.append(chip(labelFor(c), 'vm-chip vm-chip-cat', 'cat', c));
+  for (const t of video.tags ?? []) chips.append(chip(t, 'vm-chip', 'tag', t));
   if (chips.childElementCount) info.append(chips);
 
   const dl = el('dl', 'vm-meta');
@@ -444,12 +458,6 @@ function buildInfo(video, labelFor) {
   for (const [k, v] of Object.entries(video.meta ?? {})) row(k, v);
   if (dl.childElementCount) info.append(dl);
   return info;
-}
-
-function chip(text, cls) {
-  const s = el('span', cls);
-  s.textContent = text;
-  return s;
 }
 
 /** Links come from scene data, so only allow web and relative URLs. */

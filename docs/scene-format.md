@@ -24,6 +24,7 @@ complete example is in [examples/scene.example.json](examples/scene.example.json
 | `surface` | object | plane | See below. |
 | `preview` | object | | See below. |
 | `layout` | object | | See below. |
+| `layouts` | array | `[]` | Pre-baked alternate arrangements of the same videos. See below. |
 | `output` | object | | See below. |
 | `build` | object | | How to build (hardware encoding). See below. |
 | `categories` | array | `[]` | `{ id, label?, color?, description? }`. Their order sets the order of category groups on the wall. |
@@ -76,6 +77,7 @@ Videos are grouped, sorted, then packed. Two packing strategies:
 | `aspect` | `"16:9"`, or the surface's shape | Wall aspect, when `output.canvas` isn't set. On a cylinder or sphere it defaults to the shape that fills the surface (see [`surface`](#surface)). |
 | `groupGap` | `1` (grid), `0` (masonry) | Empty cells (grid) or whole columns (masonry) between groups. |
 | `labels` | `true` | Whether the viewer shows group labels. In masonry, a label strip is reserved above each group. |
+| `label` | from `groupBy` | The layout's name in the viewer's layout switcher, e.g. `"By topic"`. Without it the name comes from what it groups or sorts by: `"By category"`, `"By place"` for `tag:place`, `"By year"` for `meta.year`. |
 | `cellAspect` | `"16:9"` | Grid only. Aspect of each cell. |
 | `fit` | `"contain"` | Grid only. `"contain"` letterboxes with `output.background`; `"cover"` crops to fill the cell. |
 | `columnWidth` | `384` | Masonry only. Column width in pixels at full zoom. With `output.canvas` and no `columnWidth`, it's derived so the wall fits the canvas. |
@@ -90,6 +92,31 @@ crops each part into its tile, and the viewer keeps the two tiles in tight
 sync. `avoidSplits` (on by default) keeps most videos inside one tile at the
 cost of some empty space, and masonry tiles are taller by default (768×1024)
 so that most videos fit in one.
+
+## `layouts`
+
+Alternate arrangements of the same videos, for example by place as well as by
+category. Each one is built as its own tile pyramid, and the viewer can switch
+between them without reloading. Regrouping needs new tiles because the videos
+are composited into them, so every layout adds to the build time and output
+size (the dry run shows how much).
+
+```json
+"layouts": [
+  { "id": "place", "groupBy": "tag:place" },
+  { "id": "flow", "label": "Free flow", "pack": "masonry", "groupBy": "none", "sortBy": ["-meta.year"] }
+]
+```
+
+| Field | Notes |
+|---|---|
+| `id` | **Required.** URL-safe and unique. It names the output folder (`layouts/<id>/`) and appears in deep links (`#layout=place`). `"default"` is reserved for the main layout. |
+| any `layout` field | `pack`, `groupBy`, `sortBy`, `label`, `fit`, `columnWidth` and the rest. The alternate starts from the main `layout` and changes what it sets. Its own fields also win over CLI flags such as `--group-by`, since they are what makes it different. |
+
+Everything outside `layout` (the loop, the canvas or cell size, tile size,
+codecs, encoder) is shared. A grid alternate with the same cell size reuses
+the main layout's preview clips, so it only costs its tiles. A masonry
+alternate ignores `output.cell`. At most 8 alternates.
 
 ## `output`
 
@@ -164,6 +191,14 @@ viewer needs:
 - each video's rectangle (`rect`, in full-resolution wall pixels), its
   `cell` in grid walls, its metadata and preview start, and the paths of its
   full rendition (`null` when built tiles-only) and poster
+- `layouts`: every arrangement the viewer can switch to. The first is the
+  main one (`{ "id": "default", "label": … }`), whose data is at the top
+  level. Each alternate carries its own `layout`, `grid`, `content`,
+  `pyramid` (with tile and still templates under `layouts/<id>/`), `labels`
+  and `groups`, plus `rects` (`[x, y, w, h]` or `null` per video, in
+  `videos` order) and `cells` (`[col, row]` per video, or `null` for
+  masonry). Manifests from before milestone 5 have no `layouts`; the viewer
+  treats them as having one.
 
 Version 1 manifests (milestones 1 and 2) had only cells; the viewer still
 reads them. The manifest is produced by `createRuntimeManifest` in

@@ -162,6 +162,102 @@
         },
         "labels": {
           "type": "boolean"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Name of this arrangement in the viewer layout switcher, e.g. \"By place\"."
+        }
+      }
+    },
+    "layouts": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Alternate arrangements of the same videos, each built as its own tile pyramid. The viewer switches between them.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "description": "URL-safe identifier"
+          },
+          "pack": {
+            "enum": [
+              "grid",
+              "masonry"
+            ],
+            "description": "\"grid\": uniform cells. \"masonry\": fixed-width columns, each video at its own aspect."
+          },
+          "cellAspect": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?[:/]\\d+(\\.\\d+)?$",
+            "description": "Grid only: aspect of each cell."
+          },
+          "aspect": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d+)?[:/]\\d+(\\.\\d+)?$",
+            "description": "Overall wall aspect when output.canvas is not set."
+          },
+          "fit": {
+            "enum": [
+              "cover",
+              "contain"
+            ],
+            "description": "Grid only: \"contain\" letterboxes the whole frame (default), \"cover\" crops to fill the cell."
+          },
+          "columnWidth": {
+            "type": "integer",
+            "minimum": 32,
+            "maximum": 2048,
+            "description": "Masonry only: column width in pixels at full zoom."
+          },
+          "gap": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 256,
+            "description": "Masonry only: gutter between videos in pixels at full zoom."
+          },
+          "groupArrange": {
+            "enum": [
+              "columns",
+              "bands"
+            ],
+            "description": "Masonry only: groups side by side as column groups, or stacked as full-width bands."
+          },
+          "avoidSplits": {
+            "type": "boolean",
+            "description": "Masonry only: move a video down rather than let it cross a tile edge, when it fits in one tile."
+          },
+          "groupBy": {
+            "type": "string",
+            "pattern": "^(none|category|tag:.+|meta\\..+)$"
+          },
+          "sortBy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^-?(id|title|duration|category|src|meta\\..+)$"
+            }
+          },
+          "groupGap": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Empty cells (grid, default 1) or whole columns (masonry, default 0) between groups."
+          },
+          "labels": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Name of this arrangement in the viewer layout switcher, e.g. \"By place\"."
+          }
         }
       }
     },

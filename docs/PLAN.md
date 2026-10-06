@@ -1,6 +1,6 @@
 # VideoMap — Implementation Plan (for review)
 
-**Status:** Milestones 1–4 built · **Revision 2:** 2026-10-05
+**Status:** Milestones 1–5 built · **Revision 2:** 2026-10-05
 
 > **What changed in revision 2:** videos are no longer cropped by default
 > (G12). The packing strategy can now be chosen, and masonry columns are the
@@ -510,7 +510,8 @@ dist/
 ├─ tiles/{z}/{x}/{y}.mp4
 ├─ stills/{z}/{x}/{y}.webp
 ├─ media/{id}.mp4      # full renditions (absent when built tiles-only, §5.3)
-└─ posters/{id}.webp   # always present
+├─ posters/{id}.webp   # always present
+└─ layouts/{id}/       # pre-baked alternate layouts: their own tiles/ and stills/ (§8.4)
 ```
 
 * All URLs are **relative**, so the folder works at `/`, `/foo/bar/` or on a CDN.
@@ -530,7 +531,7 @@ dist/
 ### 8.1 Renderer
 
 * **A small custom WebGL renderer** (WebGL2, with a WebGL1 fallback), not
-  three.js. *(As built: about 22 KB gzipped JS for the whole viewer, curved surfaces included.)* The geometry is just tessellated quad patches, and a few KB of
+  three.js. *(As built: about 22 KB gzipped JS for the whole viewer, curved surfaces included; 29 KB with milestone 5's discovery UI.)* The geometry is just tessellated quad patches, and a few KB of
   focused code beats a 150 KB+ dependency on low-end phones.
   *(Decision point: three.js would speed up development. See §13.)*
 * **One unified quadtree.** A tile (z, x, y) covers a (u,v) rectangle. A
@@ -629,6 +630,26 @@ dist/
 * *Re-layout* by a different grouping needs a rebuild. Optionally the CLI can
   pre-bake several layouts (`layouts: ["category", "tag:location"]`) and the
   viewer switches between them.
+* *(As built, milestone 5: the search box sits under the title, and every
+  word must appear in a video's title, id, description, categories, tags,
+  credits or `meta`, ignoring case and accents. Chips filter by any of the
+  chosen categories and all of the chosen tags. Non-matching videos are
+  covered with the background color at 80%, one quad per video in view
+  (found through the rectangle index; on curved surfaces, from the screen
+  rays' bounds), and the matches keep their full color. Desaturation was
+  dropped: blending can't mix color channels, and a shader pass per tile
+  would cost more than the quads. Group labels show match counts and fly to
+  their group when clicked. The browse panel holds the layout switcher, the
+  chips, "Show on wall" and the list view, grouped and in wall order; on
+  phones it's full screen. The search, filters and layout are in the URL
+  hash. Alternate layouts are `scene.layouts` entries: an id plus any
+  `layout` fields, which win over CLI flags. Each is built as its own
+  pyramid under `layouts/<id>/`, and clips of the same size are shared, so a
+  grid alternate with the same cell size costs only its tiles. In the
+  viewer, tile keys carry the layout, so the video pool and still cache move
+  on to the new tiles without clearing, and switching back is instant. A
+  switch keeps open windows and centers the focused video in its new
+  place.)*
 
 ### 8.5 Floating video player (windowed)
 
@@ -665,6 +686,10 @@ dist/
   in.
 * A minimap (plane) or orientation compass (cylinder/sphere), surface switcher
   (if baked), fullscreen and a share link.
+  *(As built, milestone 5: the minimap is a 2D canvas drawn from the level-0
+  still, shown only while the wall is bigger than the screen, with the view
+  outlined and filtered-out videos dimmed. Click or drag moves the camera. The
+  compass moves to milestone 7 with the gyroscope.)*
 * Optional on-screen performance HUD (`?debug`) showing FPS, active decoders,
   LOD and texture memory.
 
@@ -735,8 +760,8 @@ throttling, plus a manual device matrix (below) before each milestone.
 | **2. Viewer MVP (plane)** — *built* | WebGL quadtree, scheduler, pan/zoom, picking, floating player with highlight, leader line and Locate, deep links | Playwright smoke tests and screenshots |
 | **3. Layout and build revisions** (revision 2) — *built* | **3a.** `fit: "contain"` by default, plus a per-video `fit` override. **3b.** Tiles-only: info-card window, size estimate with and without media, `vmap clean`, `--no-keep-cache`. **3c.** Hardware encoding: detection by test encode, `auto` by default, per-encoder settings tables, a hardware session pool, libx264 fallback, `--hw`/`--hw-jobs`, `hardwareFinal` (default off after measuring, `--hw-final`), `vmap doctor` output. **3d.** Masonry: the rectangle layout model in `core` and the manifest (`videos[].rect`), the shortest-column packer as an opt-in (`grid` stays the default), both group arrangements (side-by-side column groups by default, and bands), tiles that are whole columns wide, cropped compositing for clips that cross tiles, `avoidSplits`, sync groups in the scheduler, and rectangle-based picking, highlight and labels | 3a–3c are small and independent, so they ship first. 3d changes the manifest, so it comes before curved surfaces and discovery, which build on the layout model. Tests: packer unit tests (order, column balance, aspect, `avoidSplits`); a build test with portrait, landscape and square sources that checks nothing is cropped; an encoder-fallback test with a fake failing encoder; a hardware vs libx264 timing and size comparison in the build report; a Playwright test that clicks a masonry video crossing a tile edge. *(As built: all of these exist. The no-cropping test samples each video's border pixels in the decoded tiles, including videos split across two tiles. The hardware test checks NVENC tiles with ffprobe (Main profile, a keyframe per second) and skips without a working encoder. Building masonry walls from repeated sources found two latent races, fixed here: videos sharing a source shared a clip file, and tiles with identical content shared a master file.)* |
 | **4. Curved surfaces** — *built* | Cylinder (inside and outside), sphere (latitude band), surface-aware controls and picking | Works with both grid and masonry. *(As built: `--view` and `--arc` on the CLI, and a default wall shape per surface. Picking, hover, outlines drawn on the surface, labels, leader lines (pointing off screen when a video is round the back), Locate and deep links all work on the curve. Tests: unit tests of the mapping (round trips, the seam, Mercator keeping shapes, centering in the band, ray hits that skip the back of the wall) and of the camera on five surface/view combinations (projection, picking, zoom about the pointer, drag, limits, the wrap, the matrix against the CPU projection). Browser tests click a video at the side of an inside cylinder, drag past the seam, and on an outside sphere check the deep link, back-side culling and that the space around the sphere picks nothing. Gyroscope look-around moved to milestone 7.)* |
-| **5. Discovery** (next) | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | |
-| **6. Studio** | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | |
+| **5. Discovery** — *built* | Search, tag/category filtering (rectangle dimming), group labels, list view, minimap, optional pre-baked alternate layouts | *(As built: all of these, with the search, filters and layout in the URL. Alternate layouts are `scene.layouts` (§8.4), built under `layouts/<id>/`. Window chips filter the wall, `/` focuses the search, and opening a video from the list keeps it clear of the panel and its window. Viewer JS is 29 KB gzipped. Tests: search semantics, chips, the hash, the layout model and group membership, the region query, the curved-surface view bounds; config, validation and manifest of alternates; a build with a grid and a masonry alternate (every listed tile on disk, clips reused, a dropped layout pruned); browser tests that read back pixels to check dimming, then cover the list, label flights, switching layouts both ways with windows open, the minimap and the phone sheet.)* |
+| **6. Studio** (next) | Uploads, metadata editing, JSON editor, build queue with SSE, preview, zip export, live layout preview, hardware encoding setting | |
 | **7. Samples and polish** | 3–4 sample scenes, theming, accessibility pass, docs site, perf HUD, release packaging (`npx vmap`), gyroscope look-around and an orientation compass for curved surfaces | |
 | **Later** | More packing strategies: `rows` (justified), `random`, `rotated`, `stack` (photo stack). GPU filter chain for faster builds. A live tile crop in the tiles-only info card | The rectangle model from 3d is designed so these are new packers plus rotated compositing, not a new pipeline |
 

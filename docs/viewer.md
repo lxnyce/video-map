@@ -1,7 +1,7 @@
 # Viewer
 
 Every `vmap build` output folder includes the viewer: `index.html` plus a
-small hashed bundle in `assets/` (about 22 KB of gzipped JavaScript). It loads
+small hashed bundle in `assets/` (about 29 KB of gzipped JavaScript). It loads
 `scene.json` and shows the wall with WebGL. The source is in
 `packages/viewer`.
 
@@ -15,6 +15,9 @@ small hashed bundle in `assets/` (about 22 KB of gzipped JavaScript). It loads
 | Open a video | Click it, or `Enter` on the video in the middle of the screen | Tap it |
 | Video info | Hover | Long-press |
 | Close the top window | `Esc` or ✕ | ✕, or swipe the sheet down |
+| Search | `/`, or click the search box | The list button, top right |
+| Go to a group | Click its label on the wall, or its heading in the list | Tap its label |
+| Move around a big wall | Click or drag in the minimap | Tap or drag in the minimap |
 
 A video opens in a **floating window** that grows out of its cell, plays the
 full-resolution file with sound, and picks up at the moment the preview was
@@ -46,6 +49,49 @@ above it.
 
 The pause button in the corner stops all tile videos, leaving still frames.
 
+## Finding videos
+
+The search box under the title filters the wall as you type. Videos that
+don't match are dimmed, so the matches stand out where they are, and each
+group label shows how many of its videos match (`3/12`). The box shows the
+total (`14/240`), and ✕ clears the search and every filter.
+
+- **Search** looks at the title, id, description, categories (ids and
+  labels), tags, credits and `meta` values. Every word must appear somewhere;
+  case and accents don't matter, so `cafe night` finds "Café at Night".
+- **The list button** opens the browse panel. It has:
+  - **Arrange** buttons, when the scene has [alternate layouts](scene-format.md#layouts).
+    Switching keeps the open windows and moves the camera to the focused
+    video in its new place (or shows the whole wall).
+  - **Category and tag chips.** A video matches if it has *any* of the chosen
+    categories and *all* of the chosen tags. Up to 16 tags are offered, the
+    commonest first; chips that every video has are left out, and the search
+    still finds any tag. Category and tag chips in a video's details panel
+    add that filter too.
+  - **The count**, **Show on wall** (fits all the matches in view) and
+    **Clear**.
+  - **The list**: every matching video with its poster, category, length and
+    tags, under group headings in wall order. It's an accessible alternative
+    to the wall (arrow keys move through it). Choosing a video opens its
+    window, growing out of the row, and flies the camera so the video sits in
+    the space the panel and window leave free. Choosing a heading flies to the
+    group.
+- **Group labels** on the wall are buttons: clicking one fits the group in
+  view.
+- **The minimap** (flat walls) appears in the bottom corner when the wall is
+  bigger than the screen. It shows the whole wall with the visible part
+  outlined, dims what the filter leaves out, and moves the camera where you
+  click or drag. Curved surfaces get an orientation compass instead, in
+  milestone 7.
+
+On a phone, the list button opens the panel full screen with the search
+field on top; **Done** closes it, and choosing a video closes it and opens the
+video's sheet.
+
+Filtering never re-encodes or reloads anything: the dimming is drawn over the
+tiles, one quad per video in view. Rearranging the wall by another grouping
+does need new tiles, which is why alternate layouts are built in advance.
+
 ## Curved surfaces
 
 Walls built with `--surface cylinder` or `--surface sphere` are drawn on that
@@ -75,7 +121,7 @@ The URL hash tracks the camera and the focused window, so any view can be
 shared:
 
 ```
-index.html#cam=3264,1836,0.25&v=reef-01
+index.html#layout=place&cam=3264,1836,0.25&v=reef-01&q=night&cat=ocean,city&tag=aerial
 ```
 
 - `cam=x,y,zoom` is the wall position in full-resolution pixels and the zoom
@@ -83,6 +129,11 @@ index.html#cam=3264,1836,0.25&v=reef-01
   middle of the screen and the zoom there, so links mean the same thing on
   every surface.
 - `v=<id>` opens that video's window. Without `cam`, the camera centers on it.
+- `layout=<id>` shows an alternate layout (the main one is left out).
+  `cam` is a position in that layout's wall.
+- `q=<text>`, `cat=<id>,<id>` and `tag=<tag>,<tag>` restore the search and
+  filters. Each list item is URL-encoded on its own, so tags may contain
+  commas.
 
 ## How playback works
 

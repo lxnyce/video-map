@@ -31,7 +31,7 @@ mainstream host and CDN does.
 | `vmap validate <scene>` | Checks the schema, settings and that every file exists. `--probe` also reads each video and reports layout warnings (upscaling, HDR, adjusted preview starts). `--json` for machine output. |
 | `vmap build <scene>` | Runs the pipeline (below). See the options table. |
 | `vmap preview [dist]` | Serves a build output with range requests. `--port`, `--host`, `--open`. |
-| `vmap info [dist]` | Summarizes a build output: layout, pyramid, groups and sizes. `--json`. |
+| `vmap info [dist]` | Summarizes a build output: layout, pyramid, groups, alternate layouts and sizes. `--json`. |
 | `vmap doctor` | Checks ffmpeg/ffprobe and the encoders and filters vmap uses, and test-encodes with each hardware H.264 encoder. |
 | `vmap clean [scene]` | Deletes the build cache next to the scene (or `--cache <dir>`). The next build re-encodes clips and tiles from the sources. |
 
@@ -104,6 +104,10 @@ Flags override the scene file, which overrides the defaults.
 6. **Full renditions and posters.** Web-friendly sources (H.264/AAC MP4, at
    most `maxHeight`) are remuxed without re-encoding. Others are transcoded.
    Posters are always made, even when full renditions are off.
+   Steps 3 to 5 run once per layout: first the main one, then each
+   alternate in `layouts` (see [scene-format.md](scene-format.md#layouts)),
+   whose tiles and stills go to `layouts/<id>/`. Clips are shared between
+   layouts wherever a video's size is the same.
 7. **Write `scene.json` and install the viewer** (`index.html` + `assets/`),
    and remove files that earlier builds left behind. If the viewer hasn't
    been built (`npm run build:viewer`), a basic debug page is used instead,
@@ -113,10 +117,11 @@ Rebuilds are incremental. Unchanged clips, tiles and renditions are reused.
 Changing only `--tile-crf` re-encodes tiles from cached masters, without
 re-reading the sources.
 
-The report lists the layout, the encoder, the time per phase (probe, clips,
-tiles, media, posters) and the output size, so different settings are easy
-to compare. A dry run prints the estimated size with and without full
-renditions.
+The report lists the layout (and a line per alternate layout, with its tile
+count), the encoder, the time per phase (probe, clips, tiles, media,
+posters) and the output size, so different settings are easy to compare. A
+dry run prints the estimated size with and without full renditions,
+counting every layout's tiles.
 
 ## Hardware encoding
 
@@ -187,7 +192,8 @@ dist/
 ├─ tiles/{z}/{x}/{y}.mp4      # tile videos (.webm too with --tile-codecs h264,vp9); z = 0 is one overview tile
 ├─ stills/{z}/{x}/{y}.webp    # first frame of each tile
 ├─ media/{id}.mp4             # full renditions for the floating player (not with --no-full)
-└─ posters/{id}.webp
+├─ posters/{id}.webp
+└─ layouts/{id}/              # each alternate layout's own tiles/ and stills/ (only with "layouts")
 ```
 
 The scene file format is documented in [scene-format.md](scene-format.md).

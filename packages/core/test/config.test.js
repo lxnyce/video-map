@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { DEFAULTS, resolveConfig } from '../src/config.js';
+import { DEFAULTS, describeLayout, resolveConfig, resolveLayouts } from '../src/config.js';
 import { parseRatio, parseSize } from '../src/dims.js';
 import { PATHS, createRuntimeManifest, fillTemplate } from '../src/manifest.js';
 import { createPyramid } from '../src/pyramid.js';
@@ -55,6 +55,43 @@ describe('resolveConfig', () => {
   });
 });
 
+describe('resolveLayouts', () => {
+  const scene = {
+    layout: { groupBy: 'category', label: 'By topic' },
+    output: { cell: '256x144' },
+    layouts: [
+      { id: 'place', groupBy: 'tag:place', sortBy: ['-duration'] },
+      { id: 'flow', label: 'Free flow', pack: 'masonry', groupBy: 'none' },
+    ],
+    videos: [],
+  };
+
+  it('resolves the main layout, then each alternate on top of the shared settings', () => {
+    const all = resolveLayouts(scene, { layout: { groupBy: 'meta.year', fit: 'cover' }, preview: { fps: 12 } });
+    assert.deepEqual(all.map((l) => `${l.id}: ${l.label}`), ['default: By topic', 'place: By place', 'flow: Free flow']);
+    const [main, place, flow] = all.map((l) => l.config);
+    assert.equal(main.layout.groupBy, 'meta.year', 'the CLI wins over the scene for the main layout');
+    assert.equal(place.layout.groupBy, 'tag:place', "an alternate's own fields win over the CLI");
+    assert.deepEqual(place.layout.sortBy, ['-duration']);
+    assert.equal(place.layout.fit, 'cover', 'everything else is shared, CLI overrides included');
+    assert.equal(place.preview.fps, 12);
+    assert.deepEqual(place.output.cell, { w: 256, h: 144 });
+    assert.equal(place.layout.label, undefined, "the main layout's label isn't inherited");
+    assert.equal(flow.layout.pack, 'masonry');
+    assert.equal(flow.output.cell, null, 'the grid cell size means nothing to a masonry alternate');
+    assert.deepEqual(flow.output.tile, { w: 768, h: 1024 }, 'masonry tile default');
+    assert.equal(resolveLayouts({ videos: [] }).length, 1);
+  });
+
+  it('names layouts after what they group or sort by', () => {
+    assert.equal(describeLayout({ groupBy: 'category', sortBy: [] }), 'By category');
+    assert.equal(describeLayout({ groupBy: 'tag:place', sortBy: [] }), 'By place');
+    assert.equal(describeLayout({ groupBy: 'meta.year', sortBy: [] }), 'By year');
+    assert.equal(describeLayout({ groupBy: 'none', sortBy: ['-duration'] }), 'By duration');
+    assert.equal(describeLayout({ groupBy: 'none', sortBy: [] }), 'All videos');
+  });
+});
+
 describe('validateScene', () => {
   const ok = { videos: [{ src: 'a.mp4' }] };
 
@@ -89,6 +126,20 @@ describe('validateScene', () => {
     assert.equal(r.valid, false);
     assert.deepEqual(r.errors.map((e) => e.path), ['videos[1].id', 'output']);
     assert.deepEqual(r.warnings.map((w) => w.path), ['videos[0].categories[0]']);
+  });
+
+  it('checks alternate layouts: unique ids, not "default", and layout fields only', () => {
+    const r = validateScene({
+      layouts: [{ id: 'place', groupBy: 'tag:place' }, { id: 'place' }, { id: 'default' }, { id: 'x', canvas: '10x10' }, { groupBy: 'none' }],
+      videos: [{ src: 'a.mp4' }],
+    });
+    assert.equal(r.valid, false);
+    const text = r.errors.map((e) => `${e.path}: ${e.message}`);
+    assert.ok(text.includes('layouts[3]: has unknown property "canvas"'), text.join('\n'));
+    assert.ok(text.includes("layouts[4]: must have required property 'id'"), text.join('\n'));
+    const dupes = validateScene({ layouts: [{ id: 'place' }, { id: 'place' }, { id: 'default' }], videos: [{ src: 'a.mp4' }] });
+    assert.deepEqual(dupes.errors.map((e) => e.path), ['layouts[1].id', 'layouts[2].id']);
+    assert.ok(validateScene({ layout: { label: 'Main' }, layouts: [{ id: 'flow', pack: 'masonry', label: 'Flow' }], videos: [{ src: 'a.mp4' }] }).valid);
   });
 });
 
@@ -137,6 +188,35 @@ describe('createRuntimeManifest', () => {
     assert.deepEqual(m.layout, { pack: 'masonry', columnWidth: 384, gap: 0, columns: layout.masonry.columns, labelHeight: 0, groupArrange: 'columns' });
     assert.deepEqual(m.videos.map((v) => v.cell), [null, null]);
     assert.deepEqual(m.videos.map((v) => v.rect.h), [216, 682]);
+  });
+
+  it('lists the layouts, with each alternate\'s pyramid, groups and rectangles under its own folder', () => {
+    const scene = { layout: { groupBy: 'none' }, layouts: [{ id: 'flow', pack: 'masonry', groupBy: 'none' }], videos: [] };
+    const [main, flow] = resolveLayouts(scene);
+    const videos = [{ id: 'a', aspect: 16 / 9 }, { id: 'b', aspect: 9 / 16 }];
+    const w0 = planWall(videos, main.config);
+    const w1 = planWall(videos, flow.config);
+    const m = createRuntimeManifest({
+      config: main.config,
+      ...w0,
+      videos: /** @type {any} */ (videos),
+      tileSources: [{ template: PATHS.tile, mime: 'video/mp4' }],
+      main: { id: main.id, label: main.label },
+      alternates: [{ id: flow.id, label: flow.label, config: flow.config, ...w1, tileSources: [{ template: `layouts/flow/${PATHS.tile}`, mime: 'video/mp4' }], prefix: 'layouts/flow/' }],
+    });
+    assert.deepEqual(m.layouts.map((l) => l.id), ['default', 'flow']);
+    assert.deepEqual(m.layouts[0], { id: 'default', label: 'By title' }, "the main layout's data stays at the top level");
+    const alt = /** @type {any} */ (m.layouts[1]);
+    assert.equal(alt.layout.pack, 'masonry');
+    assert.equal(alt.grid, null);
+    assert.equal(alt.cells, null);
+    assert.deepEqual(alt.rects, w1.layout.rects.map((r) => [r.x, r.y, r.w, r.h]));
+    assert.equal(alt.pyramid.video.template, 'layouts/flow/tiles/{z}/{x}/{y}.mp4');
+    assert.equal(alt.pyramid.still.template, 'layouts/flow/stills/{z}/{x}/{y}.webp');
+    assert.deepEqual(alt.pyramid.levels.map((l) => l.tiles), w1.tiles);
+    assert.deepEqual(alt.content, { width: w1.pyramid.contentWidth, height: w1.pyramid.contentHeight });
+    assert.equal(m.pyramid.still.template, PATHS.still);
+    assert.deepEqual(m.videos.map((v) => v.rect.w), [384, 384], 'the main layout (a grid) is still on the videos');
   });
 });
 

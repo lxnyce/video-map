@@ -231,6 +231,48 @@ export class SurfaceCamera extends Camera {
   }
 
   /**
+   * The part of the wall in view, from the screen rays, padded by a few ray
+   * spacings so nothing between rays is missed. On a wrapping wall the view may
+   * cross the seam; then it comes back as two regions.
+   * @returns {Array<{ x0: number, y0: number, x1: number, y1: number }>}
+   */
+  visibleBounds() {
+    const pts = this.samples();
+    if (!pts.length) return [];
+    const W = this.geo.width;
+    // Wall pixels per CSS pixel vary across the view; pad generously.
+    const pad = (SAMPLE_STEP * 3) / this.zoom;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const p of pts) {
+      y0 = Math.min(y0, p.y);
+      y1 = Math.max(y1, p.y);
+    }
+    y0 -= pad;
+    y1 += pad;
+    const xs = pts.map((p) => p.x).sort((a, b) => a - b);
+    const lo = xs[0];
+    const hi = xs[xs.length - 1];
+    if (!this.geo.wrap) return [{ x0: lo - pad, y0, x1: hi + pad, y1 }];
+    // The view is the circle of x minus its largest empty stretch.
+    let gap = lo + W - hi;
+    let after = -1;
+    for (let i = 0; i + 1 < xs.length; i++) {
+      if (xs[i + 1] - xs[i] > gap) {
+        gap = xs[i + 1] - xs[i];
+        after = i;
+      }
+    }
+    if (gap <= pad * 2) return [{ x0: 0, y0, x1: W, y1 }];
+    // From x0 to x1 going right, possibly round past the seam: split at the seam.
+    const x0 = (after < 0 ? lo : xs[after + 1]) - pad;
+    const x1 = (after < 0 ? hi : xs[after] + W) + pad;
+    const start = ((x0 % W) + W) % W;
+    const end = start + (x1 - x0);
+    return end <= W ? [{ x0: start, y0, x1: end, y1 }] : [{ x0: start, y0, x1: W, y1 }, { x0: 0, y0, x1: end - W, y1 }];
+  }
+
+  /**
    * Tiles of a level that are in view, nearest the middle of the screen first.
    * @param {{ scale: number }} level
    * @param {{ w: number, h: number }} tile

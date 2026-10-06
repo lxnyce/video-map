@@ -59,7 +59,117 @@ export function createRectIndex(items, width, height, bucket = 0) {
       }
       return null;
     },
+    /** Items whose rectangles meet a wall region, each once. */
+    query(x0, y0, x1, y1) {
+      /** @type {Set<T>} */
+      const out = new Set();
+      if (x1 <= 0 || y1 <= 0 || x0 >= width || y0 >= height) return out;
+      for (let by = clampY(y0); by <= clampY(y1); by++) {
+        for (let bx = clampX(x0); bx <= clampX(x1); bx++) {
+          for (const item of buckets[by * cols + bx]) {
+            const r = item.rect;
+            if (r.x < x1 && r.x + r.w > x0 && r.y < y1 && r.y + r.h > y0) out.add(item);
+          }
+        }
+      }
+      return out;
+    },
   };
+}
+
+/**
+ * The group each video sits in (index into `groups`, or -1): the group whose
+ * rectangle holds the middle of the video's.
+ * @param {Array<{ rect: Rect|null }>} videos
+ * @param {Rect[]} groups
+ * @returns {Int32Array}
+ */
+export function groupOf(videos, groups) {
+  const out = new Int32Array(videos.length).fill(-1);
+  videos.forEach((v, i) => {
+    const r = v.rect;
+    if (!r) return;
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    out[i] = groups.findIndex((g) => cx >= g.x && cx < g.x + g.w && cy >= g.y && cy < g.y + g.h);
+  });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Layouts: a scene can carry pre-baked alternate arrangements of its videos,
+// each with its own tile pyramid (plan §8.4).
+
+/**
+ * @typedef {object} Wall  one arrangement: everything that changes when the layout switches
+ * @property {string} id
+ * @property {string} label
+ * @property {any} layout
+ * @property {any} grid
+ * @property {{ width: number, height: number }} content
+ * @property {any} pyramid
+ * @property {boolean} labels
+ * @property {any[]} groups
+ * @property {Array<Rect|null>} rects  per video
+ * @property {Array<{ col: number, row: number }|null>} cells  per video
+ */
+
+/**
+ * Every arrangement in a (normalized) scene, the main one first.
+ * @param {any} scene
+ * @returns {Wall[]}
+ */
+export function wallsOf(scene) {
+  const main = scene.layouts?.[0];
+  /** @type {Wall[]} */
+  const walls = [{
+    id: main?.id ?? 'default',
+    label: main?.label ?? 'Default',
+    layout: scene.layout,
+    grid: scene.grid,
+    content: scene.content,
+    pyramid: scene.pyramid,
+    labels: scene.labels,
+    groups: scene.groups ?? [],
+    rects: scene.videos.map((v) => v.rect),
+    cells: scene.videos.map((v) => v.cell ?? null),
+  }];
+  for (const alt of (scene.layouts ?? []).slice(1)) {
+    walls.push({
+      id: alt.id,
+      label: alt.label ?? alt.id,
+      layout: alt.layout,
+      grid: alt.grid,
+      content: alt.content,
+      pyramid: alt.pyramid,
+      labels: alt.labels,
+      groups: alt.groups ?? [],
+      rects: scene.videos.map((_, i) => {
+        const r = alt.rects?.[i];
+        return r ? { x: r[0], y: r[1], w: r[2], h: r[3] } : null;
+      }),
+      cells: scene.videos.map((_, i) => {
+        const c = alt.cells?.[i];
+        return c ? { col: c[0], row: c[1] } : null;
+      }),
+    });
+  }
+  return walls;
+}
+
+/**
+ * Make an arrangement the scene's current one: the top-level fields and every
+ * video's `rect` and `cell` then describe it.
+ * @param {any} scene
+ * @param {Wall} wall
+ */
+export function applyWall(scene, wall) {
+  Object.assign(scene, { layout: wall.layout, grid: wall.grid, content: wall.content, pyramid: wall.pyramid, labels: wall.labels, groups: wall.groups });
+  scene.videos.forEach((v, i) => {
+    v.rect = wall.rects[i];
+    v.cell = wall.cells[i];
+  });
+  return scene;
 }
 
 /**

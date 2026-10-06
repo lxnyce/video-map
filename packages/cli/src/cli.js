@@ -364,6 +364,9 @@ function printReport(r, dryRun) {
     row('Grid', `${l.cols}×${l.rows} cells of ${formatSize(l.cell)} → ${l.width}×${l.height} px${groups}`);
   }
   row('Pyramid', `${r.levels.length} level(s) of ${formatSize(r.tile)} tiles: ${levelList} (${totalTiles} tiles)`);
+  for (const a of r.alternates) {
+    row('Layout', `${a.label} ${dim(`(${a.id})`)}: ${a.pack} → ${a.width}×${a.height} px${a.groups ? `, ${a.groups} groups` : ''} · ${a.tiles} tiles`);
+  }
   row('Loop', `${r.preview.duration}s at ${r.preview.fps} fps${r.looped ? ` · ${r.looped} short video(s) looped` : ''}`);
   const e = r.encoder;
   const hw = e.setting === 'off' ? 'hardware off' : e.detected?.length === 0 ? 'no working hardware encoder' : '';
@@ -379,7 +382,7 @@ function printReport(r, dryRun) {
   }
   if (r.sizes) {
     const s = r.sizes;
-    row('Size', `tiles ${mb(s.tiles)} · stills ${mb(s.stills)}${r.full ? ` · media ${mb(s.media)}` : ''} · posters ${mb(s.posters)} · total ${bold(mb(s.total))}`);
+    row('Size', `tiles ${mb(s.tiles)} · stills ${mb(s.stills)}${s.layouts ? ` · other layouts ${mb(s.layouts)}` : ''}${r.full ? ` · media ${mb(s.media)}` : ''} · posters ${mb(s.posters)} · total ${bold(mb(s.total))}`);
     row('Cache', r.cacheCleared ? 'intermediates deleted (--no-keep-cache)' : `${mb(s.cache)} in the build cache${dim(' (vmap clean deletes it)')}`);
   } else {
     const s = r.estimate;
@@ -441,7 +444,8 @@ async function info(args) {
   if (scene.format !== SCENE_FORMAT) throw new UsageError(`${rel(root)}/scene.json is not a VideoMap build output.`);
 
   const sizes = {};
-  for (const dir of ['tiles', 'stills', 'media', 'posters']) sizes[dir] = await dirSize(path.join(root, dir));
+  for (const dir of ['tiles', 'stills', 'media', 'posters', 'layouts']) sizes[dir] = await dirSize(path.join(root, dir));
+  if (!sizes.layouts) delete sizes.layouts;
   const summary = {
     title: scene.title,
     version: scene.version,
@@ -459,6 +463,7 @@ async function info(args) {
     levels: scene.pyramid.levels.map((l) => l.tiles.length),
     preview: `${scene.preview.duration}s @ ${scene.preview.fps} fps`,
     groups: scene.groups.map((g) => `${g.label} (${g.count})`),
+    layouts: (scene.layouts ?? []).map((l) => ({ id: l.id, label: l.label })),
     sizes,
   };
   if (values.json) {
@@ -473,6 +478,7 @@ async function info(args) {
   row('Pyramid', `${summary.levels.length} levels of ${summary.tile} tiles: ${summary.levels.map((n, z) => `z${z} ${n}`).join(', ')}`);
   row('Loop', summary.preview);
   if (summary.groups.length) row('Groups', summary.groups.join(', '));
+  if (summary.layouts.length > 1) row('Layouts', summary.layouts.map((l) => `${l.label} ${dim(`(${l.id})`)}`).join(', '));
   row('Size', Object.entries(sizes).map(([k, v]) => `${k} ${mb(v)}`).join(' · '));
   return EXIT.ok;
 }

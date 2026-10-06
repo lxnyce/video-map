@@ -37,7 +37,7 @@ import { chooseEncoder, createEncoderRunner, detectHardware } from './hardware.j
 import { loadScene, planBuild } from './plan.js';
 import { createLimiter, createProgress } from './progress.js';
 
-const MANAGED_DIRS = ['tiles', 'stills', 'media', 'posters', 'assets'];
+const MANAGED_DIRS = ['tiles', 'stills', 'media', 'posters', 'assets', 'layouts'];
 const FALLBACK_VIEWER = new URL('../assets/fallback-viewer.html', import.meta.url);
 
 /**
@@ -146,9 +146,17 @@ export async function buildScene(opts) {
       },
       /** @type {Map<number, { media: string|null, poster: string|null }>} */
       outputs: new Map(),
+      /** @type {Map<string, Promise<boolean>>} clip key → whether it was cached; videos (in any layout) with the same source and size share a clip */
+      making: new Map(),
+      /** @type {Map<string, Promise<void>>} master key → settles when the tile writing it is done */
+      writing: new Map(),
     };
 
-    await Promise.all([buildTiles(ctx), buildMedia(ctx)]);
+    // The main layout's tiles, then each alternate's, alongside the full renditions and posters.
+    const allTiles = async () => {
+      for (const wall of plan.walls) await buildTiles(ctx, wall);
+    };
+    await Promise.all([allTiles(), buildMedia(ctx)]);
     await writeManifest(ctx, scene);
     const viewer = await installViewer(outDir, ctx.produced);
     if (!viewer) plan.warnings.push('The WebGL viewer is not built, so a basic debug viewer was used. Run "npm run build:viewer" and build again.');
@@ -171,27 +179,33 @@ export async function buildScene(opts) {
 // ---------------------------------------------------------------------------
 // Tiles
 
-async function buildTiles(ctx) {
-  const { plan, cache, tools, runner, progress, outDir, counts, timings } = ctx;
-  const { config, pyramid, tiles, codecs } = plan;
+/**
+ * @param {any} ctx
+ * @param {import('./plan.js').Wall} wall
+ */
+async function buildTiles(ctx, wall) {
+  const { plan, cache, tools, runner, progress, outDir, counts, timings, making, writing } = ctx;
+  const { config } = plan;
+  const { pyramid, tiles, codecs } = wall;
+  const named = (phase) => (wall.prefix ? `${phase} · ${wall.label}` : phase);
   const { fps, frames } = config.preview;
   const bg = config.output.background;
   const hwFinal = config.build.hardwareFinal;
 
   // 1. Normalized preview clips, one per video, sized to its rectangle on the wall.
   let t0 = Date.now();
-  const clipPhase = progress.phase('Clips', plan.sources.length);
+  const clipPhase = progress.phase(named('Clips'), plan.sources.length);
   /** @type {Map<number, { key: string, file: string, size: { w: number, h: number } }>} */
   const clips = new Map();
-  /** @type {Map<string, Promise<boolean>>} clip key → whether it was cached; videos with the same source and size share a clip */
-  const making = new Map();
   await Promise.all(plan.sources.map(async (s) => {
     const hdr = ctx.toneMap && s.probe.hdr;
-    const size = { w: s.rect.w, h: s.rect.h };
+    const rect = wall.layout.rects[s.index];
+    const size = { w: rect.w, h: rect.h };
+    const fit = wall.fits[s.index];
     // Small clips are cheap for x264 (decoding the source is the real work), so only big ones use the GPU.
     const encoder = size.w * size.h >= HW_CLIP_PIXELS ? runner.current : 'libx264';
     const key = cache.key('clip', ENCODER_VERSION, s.fingerprint, s.window, config.preview.loopShort, fps, frames,
-      size, s.fit, s.fit === 'contain' ? bg : null, hdr, encoder);
+      size, fit, fit === 'contain' ? bg : null, hdr, encoder);
     const file = cache.file('clips', key, 'mp4');
     const first = !making.has(key);
     if (first) making.set(key, makeClip());
@@ -210,7 +224,7 @@ async function buildTiles(ctx) {
         fps,
         frames,
         size,
-        fit: s.fit,
+        fit,
         background: bg,
         toneMap: ctx.toneMap,
         encode: masterEncode(enc, { fps, size }),
@@ -220,16 +234,14 @@ async function buildTiles(ctx) {
     }
   }));
   clipPhase.end();
-  timings.clips = (Date.now() - t0) / 1000;
+  timings.clips += (Date.now() - t0) / 1000;
 
   // 2. Tiles, deepest level first; each parent is built from its children's masters.
   t0 = Date.now();
-  const contents = tileContents(pyramid, plan.layout.rects);
+  const contents = tileContents(pyramid, wall.layout.rects);
   /** @type {Map<string, { key: string, file: string }>} */
   const masters = new Map();
-  /** @type {Map<string, Promise<void>>} master key → settles when the tile writing it is done */
-  const writing = new Map();
-  const tilePhase = progress.phase('Tiles', tiles.reduce((n, l) => n + l.length, 0));
+  const tilePhase = progress.phase(named('Tiles'), tiles.reduce((n, l) => n + l.length, 0));
   const finalsFor = (encoder) => codecs.map((c) => ({
     ...c,
     encode: tileEncode({ tile: pyramid.tile, fps, crf: config.output.tileCrf, level: c.level, codec: c.codec, encoder: c.codec === 'h264' && hwFinal ? encoder : 'libx264' }),
@@ -268,7 +280,7 @@ async function buildTiles(ctx) {
       // first one writes it, the others wait and encode their finals from it.
       const sharing = needMaster ? writing.get(masterKey) : undefined;
       let release = () => {};
-      if (needMaster && !sharing) writing.set(masterKey, new Promise((resolve) => { release = resolve; }));
+      if (needMaster && !sharing) writing.set(masterKey, /** @type {Promise<void>} */ (new Promise((resolve) => { release = resolve; })));
       try {
         await tileJob();
       } finally {
@@ -278,7 +290,7 @@ async function buildTiles(ctx) {
       async function tileJob() {
         const planned = finalsFor(encoder);
         const finals = planned.map((f) => ({ codec: f.codec, rel: fillTemplate(f.template, { z, x, y }) }));
-        const stillRel = config.output.stills ? fillTemplate(PATHS.still, { z, x, y }) : null;
+        const stillRel = config.output.stills ? fillTemplate(wall.prefix + PATHS.still, { z, x, y }) : null;
         const outRels = [...finals.map((f) => f.rel), ...(stillRel ? [stillRel] : [])];
         for (const r of outRels) ctx.produced.add(r);
         const finalKey = cache.key('final', masterKey, planned.map((f) => f.encode), Boolean(stillRel));
@@ -324,7 +336,7 @@ async function buildTiles(ctx) {
     }));
   }
   tilePhase.end();
-  timings.tiles = (Date.now() - t0) / 1000;
+  timings.tiles += (Date.now() - t0) / 1000;
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +445,17 @@ async function writeManifest(ctx, scene) {
     tileSources: plan.codecs.map((c) => ({ template: c.template, mime: c.mime })),
     categories: scene.categories ?? [],
     generator: { name: 'videomap', version: pkg.version },
+    main: { id: plan.walls[0].id, label: plan.walls[0].label },
+    alternates: plan.walls.slice(1).map((w) => ({
+      id: w.id,
+      label: w.label,
+      config: w.config,
+      pyramid: w.pyramid,
+      layout: w.layout,
+      tiles: w.tiles,
+      tileSources: w.codecs.map((c) => ({ template: c.template, mime: c.mime })),
+      prefix: w.prefix,
+    })),
   });
   await writeFile(path.join(outDir, 'scene.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -526,8 +549,8 @@ async function pruneEmptyDirs(dir) {
 }
 
 async function measure(outDir) {
-  const sizes = { tiles: 0, stills: 0, media: 0, posters: 0, total: 0 };
-  for (const dir of ['tiles', 'stills', 'media', 'posters']) sizes[dir] = await dirSize(path.join(outDir, dir));
+  const sizes = { tiles: 0, stills: 0, media: 0, posters: 0, layouts: 0, total: 0 };
+  for (const dir of ['tiles', 'stills', 'media', 'posters', 'layouts']) sizes[dir] = await dirSize(path.join(outDir, dir));
   sizes.total = await dirSize(outDir);
   return sizes;
 }
@@ -560,6 +583,16 @@ function report({ plan, outDir, caps, started, counts, sizes, hardware, runner, 
     content: { width: pyramid.contentWidth, height: pyramid.contentHeight },
     preview: { duration: config.preview.duration, fps: config.preview.fps },
     levels: pyramid.levels.map((l) => ({ z: l.z, tilesX: l.tilesX, tilesY: l.tilesY, tiles: tiles[l.z].length })),
+    // Pre-baked alternate arrangements, each with its own pyramid under layouts/<id>/.
+    alternates: plan.walls.slice(1).map((w) => ({
+      id: w.id,
+      label: w.label,
+      pack: w.layout.pack,
+      width: w.layout.width,
+      height: w.layout.height,
+      groups: w.layout.groups.length,
+      tiles: w.tiles.reduce((n, l) => n + l.length, 0),
+    })),
     codecs: plan.codecs.map((c) => c.mime),
     encoder: {
       setting: hardware.setting,

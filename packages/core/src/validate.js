@@ -85,6 +85,13 @@ export function validateScene(scene) {
     });
   }
 
+  const layoutIds = new Map();
+  (scene.layouts ?? []).forEach((alt, i) => {
+    if (alt.id === 'default') errors.push({ path: `layouts[${i}].id`, message: '"default" is reserved for the main layout; choose another id' });
+    else if (layoutIds.has(alt.id)) errors.push({ path: `layouts[${i}].id`, message: `duplicates layouts[${layoutIds.get(alt.id)}].id "${alt.id}"` });
+    else layoutIds.set(alt.id, i);
+  });
+
   const band = scene.surface?.latitudeBand;
   if (band && band[0] >= band[1]) errors.push({ path: 'surface.latitudeBand', message: 'south limit must be below the north limit' });
 

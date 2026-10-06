@@ -11,8 +11,13 @@
     "groupBy": "category",
     "sortBy": ["title"],
     "groupGap": 1,
-    "labels": true
+    "labels": true,
+    "label": "By category"
   },
+  "layouts": [
+    { "id": "place", "label": "By place", "groupBy": "tag:place" },
+    { "id": "flow", "label": "Free flow", "pack": "masonry", "groupBy": "none", "sortBy": ["-meta.year"] }
+  ],
   "output": {
     "canvas": "7680x4320",
     "tile": "768x432",
